@@ -1,8 +1,6 @@
 # Experimental version of wglChAoS.P v.1.3.1
 
-It works only on webBrowsers with **WebGL 2.0** capabilities and support **webAssembly**: currently only **FireFox** and **Chrome** (or *Chromium based*) browsers, ***possibly updated***.
-
-(Tested with FireFox >= 66 and Chrome >= 76 )
+It works only on webBrowsers with **WebGL 2.0** capabilities and support **webAssembly**: currently only **FireFox** and **Chrome** (or *Chromium based*) browsers, ***possibly updated*** - (Tested with FireFox >= 66 and Chrome >= 76 )
 
 ## IMPORTANT - Windows Users - required settings
 This version have last desktop **glChAoS.P** features: DualPass Accurate Rendering, Shadows and AmbientOcclusion, but use expensive WebGL 2.0 resource. And for this expensive use of resources are need  some browser settings.
@@ -30,7 +28,8 @@ From **chrome://flags** url page:
  **FireFox** - only if you note squared zones on smooth rendering areas, try: 
  - layers.acceleration.force-enabled -> true
 
- *it can happen mostly in with some VideoCards/drivers*
+ <p>&nbsp;<br></p>
+
 
 
 
@@ -40,11 +39,15 @@ From **chrome://flags** url page:
   - need to flag *"Experimental"* check
 - Directly with some presets: **[wglChAoS.P v.1.3.1 Experimental](https://brutpitt.github.io/glChAoS.P/wglChAoSP/wglChAoSP.html?width=1024&height=1024&maxbuffer=10&lowprec=1&intbuffer=20&tabletmode=0&glowOFF=0&lightGUI=0&Attractor=Aizawa)**
 
+<p>&nbsp;<br></p>
+
+
 ## Some screenshots
 
 | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot1.jpg) | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot2.jpg)|
 | :---: | :---: |
 | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot3.jpg) | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot4.jpg)|
+<p>&nbsp;<br></p>
 
 
 ## Performance notes
@@ -52,7 +55,7 @@ Although I use the fully WebGL feature, the generation phase remains on the CPU 
 
  Particularly **DLA3D** which use a kTree nanoflann external library (binary tree sort/search), and which is about 5/7 times slower respect desktop version
 
-### **Experimental is no tested on mobile devices*
+### **Experimental is still not tested on mobile devices*
 
 
 
