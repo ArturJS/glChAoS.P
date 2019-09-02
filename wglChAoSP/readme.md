@@ -26,8 +26,8 @@ In **chrome://flags** url page, set:
 
 ## Some screenshots
 
-| ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP//sShot1.jpg) | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP//sShot2.jpg)|
+| ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot1.jpg) | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot2.jpg)|
 | :---: | :---: |
-| ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP//sShot3.jpg) | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP//sShot4.jpg)|
+| ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot3.jpg) | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot4.jpg)|
 
 ### **no tested on mobile devices*
