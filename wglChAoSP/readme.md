@@ -3,7 +3,7 @@
 It works only on webBrowsers with **WebGL 2.0** capabilities and support **webAssembly**: currently only **FireFox** and **Chrome** (or *Chromium based*) browsers, ***possibly updated*** - (Tested with FireFox >= 66 and Chrome >= 76 )
 
 ## IMPORTANT - Windows Users - required settings
-This version have last desktop **glChAoS.P** features: DualPass Accurate Rendering, Shadows and AmbientOcclusion, but use expensive WebGL 2.0 resource. And for this expensive use of resources are need  some browser settings.
+This version have last desktop **glChAoS.P** features: DualPass Accurate Rendering, Shadows and AmbientOcclusion, but use expensive WebGL 2.0 resource and for this are necessary some browser settings:
 
 In general is need to disable **Angle** (DX9/DX11) and enable native **OpenGL** rendering.
 
