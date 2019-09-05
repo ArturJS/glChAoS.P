@@ -22,11 +22,11 @@ when I create a WebGL resource (I use Emscripten), I get a cumulative / progress
 
 and so on... 
 
-I have **ONLY 12 textures** : 6 FrameBuffers (6 ColorAttach and 2 Depth) and only othe 4 textures, but at the end my **12th texture** had **ID = 46**... far beyond the **32** permitted from D3D11
+I have **ONLY 12 textures** : 6 FrameBuffers (6 ColorAttach and 2 Depth) and only other 4 textures, but at the end my **12th texture** had **ID = 46**... far beyond the **32** permitted from D3D11.
 And this comportament is different from OpenGL, and also different from how I would have expected it.
 
-I workaround moving the creation of any texture and FrameBuffers before any other resource.
-A now the program works also with Angle D3D11.
+I workaround moving the creation of any texture and any FrameBuffer before any other resource.
+A now the program works also on/with Angle D3D11.
 
 **You can test the D3D11 debug version from this link: [wglChAoSP.Debug](https://brutpitt.github.io/glChAoS.P/wglChAoSP.Debug/wglChAoSP.html?width=1024&height=1024&maxbuffer=10&lowprec=1&intbuffer=20&tabletmode=0&glowOFF=0&lightGUI=0&Attractor=Hadley)**
 
