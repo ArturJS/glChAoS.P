@@ -2,10 +2,11 @@
 
 It works only on webBrowsers with **WebGL 2.0** capabilities and support **webAssembly**: currently only **FireFox** and **Chrome** (or *Chromium based*) browsers, ***possibly updated*** - (Tested with FireFox >= 66 and Chrome >= 76 )
 
-## IMPORTANT - Windows Users - required settings
-This version have last desktop **glChAoS.P** features: DualPass Accurate Rendering, Shadows and AmbientOcclusion, but use expensive WebGL 2.0 resource and for this are necessary some browser settings:
+This version have last desktop **glChAoS.P** features: DualPass Accurate Rendering, Shadows and AmbientOcclusion.
 
-In general is need to disable **Angle** (DX9/DX11) and enable native **OpenGL** rendering.
+Now wglChAoS.P works with both Angle backensd **D3D11** and **OpenGL** backend.
+
+Anyway, if in Windows you get a problem, try eventually to disable **Angle** (DX9/DX11) and enable native **OpenGL** rendering.
 
 ### FireFox settings - Windows
 
@@ -28,7 +29,6 @@ From **chrome://flags** url page:
  **FireFox** - only if you note squared zones on smooth rendering areas, try: 
  - layers.acceleration.force-enabled -> true
 
- <p>&nbsp;<br></p>
 
 
 
