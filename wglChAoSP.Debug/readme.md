@@ -30,6 +30,8 @@ A now the program works also with Angle D3D11.
 
 **You can test the D3D11 debug version from this link: [wglChAoSP.Debug](https://brutpitt.github.io/glChAoS.P/wglChAoSP.Debug/wglChAoSP.html?width=1024&height=1024&maxbuffer=10&lowprec=1&intbuffer=20&tabletmode=0&glowOFF=0&lightGUI=0&Attractor=Hadley)**
 
+**It's just a little longer to load, please be patient*
+
 
 
 ### But there is just little other "visual" issue 
