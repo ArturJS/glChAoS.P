@@ -37,7 +37,7 @@ A now the program works also with Angle D3D11.
 ### But there is just little other "visual" issue 
 
 A spatial Glow filter (deNoise) looks different in two backends: 
-- In Angle **OpenGL** backend the filter looks like the desktop version
+- In Angle **OpenGL** backend the filter looks like the desktop version and how I would expect it to be
 - In Angle **D3D11** backend teh filter looks more sharpened with both **Chrome** and **Firefox**, and 16 & 32 bit framebuffer precision.
 
 ### You can see it directly from this link: [wglChAoSP.Debug](https://brutpitt.github.io/glChAoS.P/wglChAoSP.Debug/wglChAoSP.html?width=1024&height=1024&maxbuffer=10&lowprec=1&intbuffer=20&tabletmode=0&glowOFF=0&lightGUI=0&Attractor=MagneticRight)
