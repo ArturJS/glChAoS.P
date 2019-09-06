@@ -4,34 +4,24 @@ It works only on webBrowsers with **WebGL 2.0** capabilities and support **webAs
 
 This version have last desktop **glChAoS.P** features: DualPass Accurate Rendering, Shadows and AmbientOcclusion.
 
-Now wglChAoS.P works with both Angle backensd **D3D11** and **OpenGL** backend.
+Now **wglChAoS.P** works with both Angle backends: **D3D11** and **OpenGL**.
 
 Anyway, if in Windows you get a problem, try eventually to disable **Angle** (DX9/DX11) and enable native **OpenGL** rendering.
 
-### FireFox settings - Windows
-
-From **about:config** url page:
+**FireFox settings - Windows** - from **about:config** url page:
  - webgl.disable-angle -> true
  - webgl.dxgl.enabled -> false
  
  **For Linux and OS X these options are irrilevants: they work anyway*
  
-### Chrome settings - Windows 
-
-From **chrome://flags** url page:
+**Chrome settings - Windows** - from **chrome://flags** url page:
 
  - Choose ANGLE graphics backend -> OpenGL
 
 **For Linux and OS X this option do not exist*
 
-### Linux / OS X
- 
- **FireFox** - only if you note squared zones on smooth rendering areas, try: 
+**FireFox tips - Linux / OS X** - only if you note squared zones on smooth rendering areas, try: 
  - layers.acceleration.force-enabled -> true
-
-
-
-
 
 
   ## Start wglChAoS.P v.1.3.1 Experimental
