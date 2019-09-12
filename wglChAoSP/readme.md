@@ -1,4 +1,4 @@
-# Experimental version of wglChAoS.P v.1.3.1
+# Advanced Mode version of wglChAoS.P v.1.3.2
 
 It works only on webBrowsers with **WebGL 2.0** capabilities and support **webAssembly**: currently only **FireFox** and **Chrome** (or *Chromium based*) browsers, ***possibly updated*** - (Tested with FireFox >= 66 and Chrome >= 76 )
 
@@ -24,10 +24,10 @@ Anyway, if in Windows you get a problem, try eventually to disable **Angle** (DX
  - layers.acceleration.force-enabled -> true
 
 
-  ## Start wglChAoS.P v.1.3.1 Experimental
-- From main page: **[wglChAoS.P v.1.3.1 Experimental](https://www.michelemorrone.eu/glchaosp/webGL.html)** - can select canvas size and other parameters 
-  - need to flag *"Experimental"* check
-- Directly with some presets: **[wglChAoS.P v.1.3.1 Experimental](https://brutpitt.github.io/glChAoS.P/wglChAoSP/wglChAoSP.html?width=1024&height=1024&maxbuffer=10&lowprec=1&intbuffer=20&tabletmode=0&glowOFF=0&lightGUI=0&Attractor=Aizawa)**
+  ## Start wglChAoS.P v.1.3.2 Advanced Mode
+- From main page: **[wglChAoS.P v.1.3.2 Advanced Mode](https://www.michelemorrone.eu/glchaosp/webGL.html)** - can select canvas size and other parameters 
+  - need to flag *"Advanced Mode"* check
+- Directly with some presets: **[wglChAoS.P v.1.3.2 Advanced Mode](https://brutpitt.github.io/glChAoS.P/wglChAoSP/wglChAoSP.html?width=1024&height=1024&maxbuffer=10&lowprec=1&intbuffer=20&tabletmode=0&glowOFF=0&lightGUI=0&Attractor=Aizawa)**
 
 <p>&nbsp;<br></p>
 
@@ -45,7 +45,7 @@ Although I use the fully WebGL feature, the generation phase remains on the CPU 
 
  Particularly **DLA3D** which use a kTree nanoflann external library (binary tree sort/search), and which is about 5/7 times slower respect desktop version
 
-### **Experimental is still not tested on mobile devices*
+### **Advanced Mode is still not tested on mobile devices*
 
 
 
