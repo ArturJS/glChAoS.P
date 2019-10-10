@@ -32,7 +32,7 @@ Anyway, if in Windows you get a problem, try eventually to disable **Angle** (DX
 <p>&nbsp;<br></p>
 
 
-## Some screenshots
+## Some screenshots 
 
 | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot1.jpg) | ![](https://brutpitt.github.io/glChAoS.P/wglChAoSP/ssShot2.jpg)|
 | :---: | :---: |
