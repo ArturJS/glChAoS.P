@@ -1,3 +1,4 @@
+#version 450
 ////////////////////////////////////////////////////////////////////////////////
 //
 //  Copyright (c) 2018-2019 Michele Morrone
@@ -15,6 +16,1588 @@
 //  
 ////////////////////////////////////////////////////////////////////////////////
 #line 17    //#version dynamically inserted
+#define LAYUOT_BINDING(X) layout (binding = X)
+#define LAYUOT_INDEX(X) layout(index = X)
+#define SUBROUTINE(X) subroutine(X)
+#define CONST
+
+layout(std140) uniform;
+
+LAYUOT_BINDING(2) uniform _particlesData {
+    vec3  lightDir;          // align 0
+    float lightDiffInt;
+    vec3  lightColor;        // align 16
+    float lightSpecInt;
+    vec4  POV;
+    vec2  scrnRes;
+    vec2  invScrnRes;
+    float lightAmbInt ;
+    float lightShinExp;
+    float sstepColorMin;
+    float sstepColorMax;
+    float pointSize;
+    float pointDistAtten;
+    float alphaDistAtten;
+    float alphaSkip;
+    float alphaK;
+    float colIntensity;
+    float clippingDist;
+    float zNear;
+    float zFar;
+    float halfTanFOV;
+    float velIntensity;
+    float ySizeRatio;
+    float ptSizeRatio;
+    float pointspriteMinSize;
+    float ggxRoughness;
+    float ggxFresnel;
+    float shadowSmoothRadius;
+    float shadowGranularity;
+    float shadowBias;
+    float shadowDarkness;
+    float aoRadius;
+    float aoBias;
+    float aoDarkness;
+    float aoMul;
+    float aoModulate;
+    float aoStrong;
+    float dpAdjConvex;
+    float dpNormalTune;
+    uint  lightModel;
+    uint  lightActive;
+    uint  pass;
+    uint  renderType;
+} u;                    // 51*4 + APPLE
+
+LAYUOT_BINDING(4) uniform _tMat {
+    mat4 pMatrix;
+    mat4 mvMatrix;
+    mat4 mvpMatrix;
+    mat4 mvLightM;
+} m;
+
+#if !defined(GL_ES) && !defined(__APPLE__)
+    #define lightModelOFFSET 5
+    subroutine float _lightModel(vec3 V, vec3 L, vec3 N);
+    subroutine uniform _lightModel lightModel;
+#else
+    #define lightModelOFFSET 0
+#endif
+
+#define idxPHONG     (lightModelOFFSET    )
+#define idxBLINPHONG (lightModelOFFSET + 1)
+#define idxGGX       (lightModelOFFSET + 2)
+
+
+float packColor16(vec2 color)
+{
+    return uintBitsToFloat( packUnorm2x16(color) );
+}
+vec2 unPackColor16(float pkColor)
+{
+    return unpackUnorm2x16(floatBitsToUint(pkColor));
+}
+
+
+#if !defined(GL_ES)
+
+float packColor8(vec4 color)
+{
+    return uintBitsToFloat( packUnorm4x8(color) );
+}
+vec4 unPackColor8(float pkColor)
+{
+    return unpackUnorm4x8(floatBitsToUint(pkColor));
+}
+#endif
+
+float getViewZ(float D)
+{
+    float denom = u.zFar-u.zNear;
+    return (-2.0*u.zFar*u.zNear/denom) / (-(2. * D - 1.) + ((u.zFar+u.zNear)/denom));
+    //return (pMatrix[3].z / (-(2.* D -1) - pMatrix[2].z));
+}
+float getViewZ_(float D)
+{
+    return -pow(2.0, (2. * D - 1.) * log2(u.zFar/u.zNear)) * u.zNear;
+}
+
+// linear depth (persective)
+float depthSampleA(float Z)
+{
+    //float nonLinearDepth =  (zFar + zNear + 2.0 * zNear * zFar / linearDepth) / (zFar - zNear);
+    float nonLinearDepth =  -(m.pMatrix[2].z + m.pMatrix[3].z / Z) * .5 +.5;
+    return nonLinearDepth;
+}
+
+float getDepth(float Z) 
+{
+    float n = u.zNear, f = u.zFar;
+    //return (( -Z * (f+n) - 2*f*n ) / (-Z * (f-n))  + 1.0) * .5; //non linear -> same of depthSample
+    //return ( (- 2.f * depth - (f+n))/(f-n) + 1.0) * .5; // linearize + depthSample -> linear
+    return ( ((u.zFar+u.zNear)/(u.zFar-u.zNear)) + ((2.0*u.zFar*u.zNear/(u.zFar-u.zNear)) / Z) ) * .5 + .5;
+
+}
+
+//https://stackoverflow.com/questions/18182139/logarithmic-depth-buffer-linearization/18187212#18187212
+//https://outerra.blogspot.com/2012/11/maximizing-depth-buffer-range-and.html
+
+float getDepth_(float Z)
+{
+    return (log2(1.+Z) * (2.0 / log2(u.zFar + 1.0)) -1.0) * Z;
+
+}
+
+
+float form_01_to_m1p1(float f)  { return 2. * f - 1.; }
+float form_m1p1_to_01(float f)  { return  f*.5 + .5; }
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxPHONG) SUBROUTINE(_lightModel) 
+#endif
+float specularPhong(vec3 V, vec3 L, vec3 N)
+{
+    vec3 R = reflect(L, N);
+    float specAngle = max(dot(R, V), 0.0);
+
+    return pow(specAngle, u.lightShinExp * .25);
+}
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxBLINPHONG) SUBROUTINE(_lightModel) 
+#endif
+float specularBlinnPhong(vec3 V, vec3 L, vec3 N)
+{
+    vec3 H = normalize(L - V);
+    float specAngle = max(dot(H, N), 0.0);
+
+    return pow(specAngle, u.lightShinExp);
+
+}
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxGGX) SUBROUTINE(_lightModel) 
+#endif
+float specularGGX(vec3 V, vec3 L, vec3 N) 
+{
+    float alpha = u.ggxRoughness*u.ggxRoughness;
+    float alphaSqr = alpha * alpha;
+
+    vec3 H = normalize(L - V); // View = -
+    float dotLH = max(0.0, dot(L,H));
+    float dotNH = max(0.0, dot(N,H));
+    float dotNL = max(0.0, dot(N,L));
+
+    // D (GGX normal distribution)
+    float denom = dotNH * dotNH * (alphaSqr - 1.0) + 1.0;
+    float D = alphaSqr / (3.141592653589793 * denom * denom);
+
+    // F (Fresnel term)
+    float F = u.ggxFresnel + (1.0 - u.ggxFresnel) * pow(1.0 - dotLH, 5.0);
+    float k = 0.5 * alpha;
+    float k2 = k * k;
+
+    return dotNL * D * F / (dotLH*dotLH*(1.0-k2)+k2);
+}
+
+
+vec4 getParticleNormal(vec2 coord)
+{
+    vec4 N;
+    N.xy = (coord - vec2(.5))*2.0;  // diameter ZERO centred -> radius
+    N.w = dot(N.xy, N.xy);          // magnitudo
+    N.z = sqrt(1.0-N.w);            // Z convexity
+    N.xyz = normalize(N.xyz); 
+    
+    return N;
+}
+
+vec3 getSimpleNormal(float z, sampler2D depthData)
+{
+    float gradA = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
+    float gradB = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
+
+    vec2 m = u.invScrnRes * -z;// * vec2(u.scrnRes.x/u.scrnRes.y * u.halfTanFOV, u.halfTanFOV);
+    float invTanFOV = u.dpAdjConvex/u.halfTanFOV;
+
+    vec3 N0 = cross(vec3(vec2( 1., 0.)*m, gradA*invTanFOV), vec3(vec2( 0., 1.)*m, gradB*invTanFOV));
+
+    return normalize (N0);
+}
+
+vec3 getSelectedNormal(float z, sampler2D depthData)
+{
+
+    float gradA = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
+    float gradB = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
+    float gradC = z - getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2(-1., 0.)), 0).w);
+    float gradD = z - getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0.,-1.)), 0).w);
+
+    vec2 m = u.invScrnRes * -z; //vec2(u.scrnRes.x/u.scrnRes.y * u.halfTanFOV, u.halfTanFOV);
+    float invTanFOV = u.dpAdjConvex/u.halfTanFOV;
+
+    vec3 V1 = abs(gradA-gradC)>u.dpNormalTune && abs(gradA)<abs(gradC) ? vec3(vec2( 1., 0.)*m, gradA*invTanFOV) : vec3(vec2(1., 0.)*m, gradC*invTanFOV);
+    vec3 V2 = abs(gradB-gradD)>u.dpNormalTune && abs(gradB)<abs(gradD) ? vec3(vec2( 0., 1.)*m, gradB*invTanFOV) : vec3(vec2(0., 1.)*m, gradD*invTanFOV);
+    vec3 N0 = cross(V1, V2);
+
+
+    return normalize (N0);
+}
+
+#define RENDER_AO uint(1)
+#define RENDER_DEF uint(2)
+#define RENDER_SHADOW uint(4)
+
+LAYUOT_BINDING(0) uniform sampler2D tex;
+
+#define pixelColorOFFSET 0
+#define idxBLENDING (pixelColorOFFSET    )
+#define idxSOLID    (pixelColorOFFSET + 1)
+#define idxSOLID_AO (pixelColorOFFSET + 2)
+#define idxSOLID_DR (pixelColorOFFSET + 3)
+
+#if !defined(GL_ES) && !defined(__APPLE__)
+    subroutine vec4 _pixelColor(vec4 color, vec4 N);
+    subroutine uniform _pixelColor pixelColor;
+#endif
+
+in vec4 mvVtxPos;
+
+in float pointDistance;
+in vec4 particleColor;
+in float particleSize;
+
+//in vec4 shadowlightView;
+
+layout (location = 0) out vec4 outColor;
+
+
+float luminance(vec3 c) { return dot(c, vec3(0.2990, 0.5870, 0.1140)); }
+
+float getAlpha(float alpha)
+{
+
+    CONST float alphaAtten = exp(-0.1*sign(pointDistance)*pow(abs(pointDistance+1.f)+1.f, u.alphaDistAtten*.1));
+    return clamp(alpha * alphaAtten * u.alphaK, 0.0, 1.0);
+
+}
+
+vec4 acquireColor(vec2 coord)
+{
+    if(pointDistance<u.clippingDist) discard;    
+
+    vec4 color = particleColor * texture(tex, coord).r;
+
+    return vec4(color.rgb * u.colIntensity, getAlpha(color.a)) ;
+}
+
+
+vec4 newVertex;
+
+vec3 packing2Colors16bit(vec3 colorA, vec3 colorB)
+{
+    return vec3(packColor16(colorA.rg),
+                packColor16(vec2(colorA.b, colorB.r)),
+                packColor16(colorB.gb));
+}
+
+#if !defined(GL_ES)
+vec3 packing2Colors8bit(vec3 colorA, vec3 colorB)
+{
+    return vec3(packColor8(vec4(0.0,colorA.rgb)),
+                packColor8(vec4(0.0,colorB.rgb)), 0.0);
+}
+#endif
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxSOLID) SUBROUTINE(_pixelColor) 
+#endif
+vec4 pixelColorDirect(vec4 color, vec4 N)
+{
+        vec3 light =  normalize(u.lightDir);  // +vtx
+    
+        float lambertian = max(0.0, dot(light, N.xyz)); 
+
+        vec3 V = normalize(newVertex.xyz);
+#if defined(GL_ES) || defined(__APPLE__)
+        float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
+#else
+        float specular = lightModel(V, light, N.xyz);
+#endif
+
+        vec3 lightColor = color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
+                        u.lightColor * specular * u.lightSpecInt;
+
+        vec3 ambColor = (color.rgb*u.lightAmbInt + vec3(u.lightAmbInt)) * .5;
+
+        return vec4(smoothstep(u.sstepColorMin, u.sstepColorMax, lightColor + ambColor) , color.a);
+}
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxSOLID_AO) SUBROUTINE(_pixelColor) 
+#endif
+vec4 pixelColorAO(vec4 color, vec4 N)
+{
+        vec3 light =  normalize(u.lightDir);  // +vtx
+    
+        float lambertian = max(0.0, dot(light, N.xyz)); 
+
+        vec3 V = normalize(newVertex.xyz);
+#if defined(GL_ES) || defined(__APPLE__)
+        float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
+#else
+        float specular = lightModel(V, light, N.xyz);
+#endif
+
+        vec3 lColor =  color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
+                       u.lightColor * specular * u.lightSpecInt;
+
+        return vec4(packing2Colors16bit(lColor, color.rgb), getDepth(newVertex.z));
+}
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxSOLID_DR) SUBROUTINE(_pixelColor)
+#endif
+vec4 pixelColorDR(vec4 color, vec4 N)
+{
+   return vec4(color.xyz, getDepth(newVertex.z));
+}
+
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxBLENDING) SUBROUTINE(_pixelColor)  
+#endif
+vec4 pixelColorBlending(vec4 color, vec4 N)
+{
+    if(color.a < u.alphaSkip ) { discard; return color; }
+    else return color;
+}
+
+vec4 mainFunc(vec2 ptCoord)
+{
+
+    vec4 N = getParticleNormal(ptCoord);
+    if(N.w >= 1.0 || N.z < u.alphaSkip) { discard; return vec4(0.0); } //return black color and max depth
+
+    newVertex    = mvVtxPos + vec4(0., 0., N.z * particleSize, 0.);
+
+//linear
+    gl_FragDepth = getDepth(newVertex.z);
+    //gl_FragDepth = depthSample(newVertex.z); // same but with zNear & zFar
+//logarithmic
+    //vec4 pPos = m.pMatrix * newVertex;
+    //gl_FragDepth = getDepth_(pPos.w);
+//Outerra
+    //vec4 pPos = m.pMatrix * newVertex;
+    //gl_FragDepth =  getDepth_(pPos.w+1.);
+
+    vec4 color = acquireColor(ptCoord);
+
+#if defined(GL_ES) || defined(__APPLE__)
+    #if defined(GL_ES) && !defined(GLCHAOSP_LIGHTVER_EXPERIMENTAL)
+        return u.lightActive==uint(1) ? pixelColorDirect(color, N) : pixelColorBlending(color, N);
+    #else        
+        switch(u.renderType) {
+            default:
+            case uint(0) : return pixelColorBlending(color, N);
+            case uint(1) : return pixelColorDirect(color, N);
+            case uint(2) : return pixelColorAO(color, N);
+            case uint(3) : return pixelColorDR(color, N);             
+        }
+        //return (u.pass >= uint(2)) ? vec4(color.xyz, getDepth(newVertex.z)) : (u.pass==uint(0) ? retColor : vec4(retColor.xyz, getDepth(newVertex.z))); 
+    #endif
+#else                          
+        return pixelColor(color, N); 
+#endif
+}
+
+void main()
+{
+
+    vec2 ptCoord = vec2(gl_PointCoord.x,1.0-gl_PointCoord.y); //upsideDown: revert point default
+    outColor = mainFunc(ptCoord);
+}
+#version 450
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 2018-2019 Michele Morrone
+//  All rights reserved.
+//
+//  mailto:me@michelemorrone.eu
+//  mailto:brutpitt@gmail.com
+//  
+//  https://github.com/BrutPitt
+//
+//  https://michelemorrone.eu
+//  https://BrutPitt.com
+//
+//  This software is distributed under the terms of the BSD 2-Clause license
+//  
+////////////////////////////////////////////////////////////////////////////////
+#line 17    //#version dynamically inserted
+#define LAYUOT_BINDING(X) layout (binding = X)
+#define LAYUOT_INDEX(X) layout(index = X)
+#define SUBROUTINE(X) subroutine(X)
+#define CONST
+
+
+layout(std140) uniform;
+
+layout (location = 0) in vec4 a_ActualPoint;
+
+LAYUOT_BINDING(0) uniform sampler2D paletteTex;
+
+LAYUOT_BINDING(2) uniform _particlesData {
+    vec3  lightDir;          // align 0
+    float lightDiffInt;
+    vec3  lightColor;        // align 16
+    float lightSpecInt;
+    vec4  POV;
+    vec2  scrnRes;
+    vec2  invScrnRes;
+    float lightAmbInt ;
+    float lightShinExp;
+    float sstepColorMin;
+    float sstepColorMax;
+    float pointSize;
+    float pointDistAtten;
+    float alphaDistAtten;
+    float alphaSkip;
+    float alphaK;
+    float colIntensity;
+    float clippingDist;
+    float zNear;
+    float zFar;
+    float halfTanFOV;
+    float velIntensity;
+    float ySizeRatio;
+    float ptSizeRatio;
+    float pointspriteMinSize;
+    float ggxRoughness;
+    float ggxFresnel;
+    float shadowSmoothRadius;
+    float shadowGranularity;
+    float shadowBias;
+    float shadowDarkness;
+    float aoRadius;
+    float aoBias;
+    float aoDarkness;
+    float aoMul;
+    float aoModulate;
+    float aoStrong;
+    float dpAdjConvex;
+    float dpNormalTune;
+    uint  lightModel;
+    uint  lightActive;
+    uint  pass;
+    uint  renderType;
+} u;
+
+LAYUOT_BINDING(4) uniform _tMat {
+    mat4 pMatrix;
+    mat4 mvMatrix;
+    mat4 mvpMatrix;
+    mat4 mvLightM;
+} m;
+
+#ifndef GL_ES
+out gl_PerVertex
+{
+    vec4 gl_Position;
+    float gl_PointSize;
+    //float gl_ClipDistance[1];
+};
+#endif
+
+
+#ifndef GL_ES
+    subroutine vec4 _colorResult();
+    subroutine uniform _colorResult colorResult;
+#endif
+
+// Load OBJ
+#ifndef GL_ES
+LAYUOT_INDEX(1) SUBROUTINE(_colorResult) vec4 objColor()
+{
+    uint packCol = floatBitsToUint(a_ActualPoint.w);
+    vec4 col = unpackUnorm4x8(packCol);
+
+    return col;
+}
+#endif
+
+LAYUOT_INDEX(0) SUBROUTINE(_colorResult) vec4 velColor()
+{
+    float vel = a_ActualPoint.w*u.velIntensity;
+    return vec4(texture(paletteTex, vec2(vel,0.f)).rgb,1.0);
+}
+
+out vec4 mvVtxPos;
+#ifdef SHADOW_PASS
+out vec4 solidVtx;
+#endif
+out float pointDistance;
+out vec4 particleColor;
+out float particleSize;
+
+
+void main()
+{
+
+
+#ifdef SHADOW_PASS
+    vec4 vtxPos =  m.mvLightM  * vec4(a_ActualPoint.xyz,1.f);
+    solidVtx = m.mvMatrix * vec4(a_ActualPoint.xyz,1.f);
+#else
+    vec4 vtxPos = m.mvMatrix * vec4(a_ActualPoint.xyz,1.f);
+#endif
+
+    #if defined(GL_ES) || defined(TEST_WGL)
+        particleColor = velColor();
+    #else
+        particleColor = colorResult();
+    #endif
+    gl_Position = m.pMatrix * vtxPos;
+
+    mvVtxPos = vec4(vtxPos.xyz,1.0);
+
+    pointDistance = gl_Position.w; //length(vtxPos.w);
+
+    float ptAtten = exp(-0.01*sign(pointDistance)*pow(abs(pointDistance)+1.f, u.pointDistAtten*.1));
+    float size = u.pointSize * ptAtten * u.ySizeRatio;
+    particleSize = size*u.invScrnRes.y;
+
+    vec4 pt  = m.pMatrix * vec4(vtxPos.xy + vec2(size) * u.ptSizeRatio , vtxPos.zw);
+
+    // NVidia & Intel do not supports gl_PointSize<1.0 -> point disappear
+    // AMD driver (some times) supports gl_PointSize from 0.1
+    // Look in Info dialog: point Range and Granularity
+    gl_PointSize = max(distance(gl_Position.xyz, pt.xyz)/max(abs(gl_Position.w),.0001), u.pointspriteMinSize);
+
+//    float fc = .5 * log2(u.zFar+1);
+//    gl_Position.z = gl_Position.w * (log2( max(.000001, 1.+gl_Position.w) ) * fc - 1.);
+}
+#version 450
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 2018-2019 Michele Morrone
+//  All rights reserved.
+//
+//  mailto:me@michelemorrone.eu
+//  mailto:brutpitt@gmail.com
+//  
+//  https://github.com/BrutPitt
+//
+//  https://michelemorrone.eu
+//  https://BrutPitt.com
+//
+//  This software is distributed under the terms of the BSD 2-Clause license
+//  
+////////////////////////////////////////////////////////////////////////////////
+#line 17    //#version dynamically inserted
+#define LAYUOT_BINDING(X) layout (binding = X)
+#define LAYUOT_INDEX(X) layout(index = X)
+#define SUBROUTINE(X) subroutine(X)
+#define CONST const
+
+#define RENDER_AO uint(1)
+#define RENDER_DEF uint(2)
+#define RENDER_SHADOW uint(4)
+
+
+#define pixelColorOFFSET 0
+#define idxBLENDING (pixelColorOFFSET    )
+#define idxSOLID    (pixelColorOFFSET + 1)
+#define idxSOLID_AO (pixelColorOFFSET + 2)
+#define idxSOLID_DR (pixelColorOFFSET + 3)
+
+#define __APPLE__
+//#define __APPLE2__
+
+layout(std140) uniform;
+
+LAYUOT_BINDING(1) uniform sampler2D tex;
+
+in vec4 mvVtxPos;
+
+in float pointDistance;
+in vec4 particleColor;
+in float particleSize;
+
+//in vec4 shadowlightView;
+
+layout (location = 0) out vec4 outColor;
+
+LAYUOT_BINDING(2) uniform _particlesData {
+    vec3  lightDir;          // align 0
+    float lightDiffInt;
+    vec3  lightColor;        // align 16
+    float lightSpecInt;
+    vec4  POV;
+    vec2  scrnRes;
+    vec2  invScrnRes;
+    float lightAmbInt ;
+    float lightShinExp;
+    float sstepColorMin;
+    float sstepColorMax;
+    float pointSize;
+    float pointDistAtten;
+    float alphaDistAtten;
+    float alphaSkip;
+    float alphaK;
+    float colIntensity;
+    float clippingDist;
+    float zNear;
+    float zFar;
+    float halfTanFOV;
+    float velIntensity;
+    float ySizeRatio;
+    float ptSizeRatio;
+    float pointspriteMinSize;
+    float ggxRoughness;
+    float ggxFresnel;
+    float shadowSmoothRadius;
+    float shadowGranularity;
+    float shadowBias;
+    float shadowDarkness;
+    float aoRadius;
+    float aoBias;
+    float aoDarkness;
+    float aoMul;
+    float aoModulate;
+    float aoStrong;
+    float dpAdjConvex;
+    float dpNormalTune;
+    uint  lightModel;
+    uint  lightActive;
+    uint  pass;
+    uint  renderType;
+} u;                    // 51*4 + APPLE
+
+LAYUOT_BINDING(4) uniform _tMat {
+    mat4 pMatrix;
+    mat4 mvMatrix;
+    mat4 mvpMatrix;
+    mat4 mvLightM;
+} m;
+
+#if !defined(GL_ES) && !defined(__APPLE__)
+    #define lightModelOFFSET 5
+    subroutine vec4 _pixelColor(vec4 color, vec4 N);
+    subroutine uniform _pixelColor pixelColor;
+#else
+    #define lightModelOFFSET 0
+#endif
+
+#if !defined(GL_ES) && !defined(__APPLE2__)
+    subroutine float _lightModel(vec3 V, vec3 L, vec3 N);
+    subroutine uniform _lightModel lightModel;
+#endif
+
+
+#define idxPHONG     (lightModelOFFSET    )
+#define idxBLINPHONG (lightModelOFFSET + 1)
+#define idxGGX       (lightModelOFFSET + 2)
+
+
+float packColor16(vec2 color)
+{
+    return uintBitsToFloat( packUnorm2x16(color) );
+}
+vec2 unPackColor16(float pkColor)
+{
+    return unpackUnorm2x16(floatBitsToUint(pkColor));
+}
+
+
+#if !defined(GL_ES)
+
+float packColor8(vec4 color)
+{
+    return uintBitsToFloat( packUnorm4x8(color) );
+}
+vec4 unPackColor8(float pkColor)
+{
+    return unpackUnorm4x8(floatBitsToUint(pkColor));
+}
+#endif
+
+float getViewZ(float D)
+{
+    float denom = u.zFar-u.zNear;
+    return (-2.0*u.zFar*u.zNear/denom) / (-(2. * D - 1.) + ((u.zFar+u.zNear)/denom));
+    //return (pMatrix[3].z / (-(2.* D -1) - pMatrix[2].z));
+}
+float getViewZ_(float D)
+{
+    return -pow(2.0, (2. * D - 1.) * log2(u.zFar/u.zNear)) * u.zNear;
+}
+
+// linear depth (persective)
+float depthSampleA(float Z)
+{
+    //float nonLinearDepth =  (zFar + zNear + 2.0 * zNear * zFar / linearDepth) / (zFar - zNear);
+    float nonLinearDepth =  -(m.pMatrix[2].z + m.pMatrix[3].z / Z) * .5 +.5;
+    return nonLinearDepth;
+}
+
+float getDepth(float Z) 
+{
+    float n = u.zNear, f = u.zFar;
+    //return (( -Z * (f+n) - 2*f*n ) / (-Z * (f-n))  + 1.0) * .5; //non linear -> same of depthSample
+    //return ( (- 2.f * depth - (f+n))/(f-n) + 1.0) * .5; // linearize + depthSample -> linear
+    return ( ((u.zFar+u.zNear)/(u.zFar-u.zNear)) + ((2.0*u.zFar*u.zNear/(u.zFar-u.zNear)) / Z) ) * .5 + .5;
+
+}
+
+//https://stackoverflow.com/questions/18182139/logarithmic-depth-buffer-linearization/18187212#18187212
+//https://outerra.blogspot.com/2012/11/maximizing-depth-buffer-range-and.html
+
+float getDepth_(float Z)
+{
+    return (log2(1.+Z) * (2.0 / log2(u.zFar + 1.0)) -1.0) * Z;
+
+}
+
+
+float form_01_to_m1p1(float f)  { return 2. * f - 1.; }
+float form_m1p1_to_01(float f)  { return  f*.5 + .5; }
+
+#if !defined(__APPLE2__)
+LAYUOT_INDEX(idxPHONG) SUBROUTINE(_lightModel) 
+#endif
+float specularPhong(vec3 V, vec3 L, vec3 N)
+{
+    vec3 R = reflect(L, N);
+    float specAngle = max(dot(R, V), 0.0);
+
+    return pow(specAngle, u.lightShinExp * .25);
+}
+
+#if !defined(__APPLE2__)
+LAYUOT_INDEX(idxBLINPHONG) SUBROUTINE(_lightModel) 
+#endif
+float specularBlinnPhong(vec3 V, vec3 L, vec3 N)
+{
+    vec3 H = normalize(L - V);
+    float specAngle = max(dot(H, N), 0.0);
+
+    return pow(specAngle, u.lightShinExp);
+
+}
+
+#if !defined(__APPLE2__)
+LAYUOT_INDEX(idxGGX) SUBROUTINE(_lightModel) 
+#endif
+float specularGGX(vec3 V, vec3 L, vec3 N) 
+{
+    float alpha = u.ggxRoughness*u.ggxRoughness;
+    float alphaSqr = alpha * alpha;
+
+    vec3 H = normalize(L - V); // View = -
+    float dotLH = max(0.0, dot(L,H));
+    float dotNH = max(0.0, dot(N,H));
+    float dotNL = max(0.0, dot(N,L));
+
+    // D (GGX normal distribution)
+    float denom = dotNH * dotNH * (alphaSqr - 1.0) + 1.0;
+    float D = alphaSqr / (3.141592653589793 * denom * denom);
+
+    // F (Fresnel term)
+    float F = u.ggxFresnel + (1.0 - u.ggxFresnel) * pow(1.0 - dotLH, 5.0);
+    float k = 0.5 * alpha;
+    float k2 = k * k;
+
+    return dotNL * D * F / (dotLH*dotLH*(1.0-k2)+k2);
+}
+
+
+vec4 getParticleNormal(vec2 coord)
+{
+    vec4 N;
+    N.xy = (coord - vec2(.5))*2.0;  // diameter ZERO centred -> radius
+    N.w = dot(N.xy, N.xy);          // magnitudo
+    N.z = sqrt(1.0-N.w);            // Z convexity
+    N.xyz = normalize(N.xyz); 
+    
+    return N;
+}
+
+vec3 getSimpleNormal(float z, sampler2D depthData)
+{
+    float gradA = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
+    float gradB = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
+
+    vec2 m = u.invScrnRes * -z;// * vec2(u.scrnRes.x/u.scrnRes.y * u.halfTanFOV, u.halfTanFOV);
+    float invTanFOV = u.dpAdjConvex/u.halfTanFOV;
+
+    vec3 N0 = cross(vec3(vec2( 1., 0.)*m, gradA*invTanFOV), vec3(vec2( 0., 1.)*m, gradB*invTanFOV));
+
+    return normalize (N0);
+}
+
+vec3 getSelectedNormal(float z, sampler2D depthData)
+{
+
+    float gradA = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
+    float gradB = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
+    float gradC = z - getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2(-1., 0.)), 0).w);
+    float gradD = z - getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0.,-1.)), 0).w);
+
+    vec2 m = u.invScrnRes * -z; //vec2(u.scrnRes.x/u.scrnRes.y * u.halfTanFOV, u.halfTanFOV);
+    float invTanFOV = u.dpAdjConvex/u.halfTanFOV;
+
+    vec3 V1 = abs(gradA-gradC)>u.dpNormalTune && abs(gradA)<abs(gradC) ? vec3(vec2( 1., 0.)*m, gradA*invTanFOV) : vec3(vec2(1., 0.)*m, gradC*invTanFOV);
+    vec3 V2 = abs(gradB-gradD)>u.dpNormalTune && abs(gradB)<abs(gradD) ? vec3(vec2( 0., 1.)*m, gradB*invTanFOV) : vec3(vec2(0., 1.)*m, gradD*invTanFOV);
+    vec3 N0 = cross(V1, V2);
+
+
+    return normalize (N0);
+}
+
+float luminance(vec3 c) { return dot(c, vec3(0.2990, 0.5870, 0.1140)); }
+
+float getAlpha(float alpha)
+{
+
+    CONST float alphaAtten = exp(-0.1*sign(pointDistance)*pow(abs(pointDistance+1.f)+1.f, u.alphaDistAtten*.1));
+    return clamp(alpha * alphaAtten * u.alphaK, 0.0, 1.0);
+
+}
+
+vec4 acquireColor(vec2 coord)
+{
+    if(pointDistance<u.clippingDist) discard;    
+
+    vec4 color = particleColor * texture(tex, coord).r;
+
+    return vec4(color.rgb * u.colIntensity, getAlpha(color.a)) ;
+}
+
+
+vec4 newVertex;
+
+vec3 packing2Colors16bit(vec3 colorA, vec3 colorB)
+{
+    return vec3(packColor16(colorA.rg),
+                packColor16(vec2(colorA.b, colorB.r)),
+                packColor16(colorB.gb));
+}
+
+#if !defined(GL_ES)
+vec3 packing2Colors8bit(vec3 colorA, vec3 colorB)
+{
+    return vec3(packColor8(vec4(0.0,colorA.rgb)),
+                packColor8(vec4(0.0,colorB.rgb)), 0.0);
+}
+#endif
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxSOLID) SUBROUTINE(_pixelColor) 
+#endif
+vec4 pixelColorDirect(vec4 color, vec4 N)
+{
+        vec3 light =  normalize(u.lightDir);  // +vtx
+    
+        float lambertian = max(0.0, dot(light, N.xyz)); 
+
+        vec3 V = normalize(newVertex.xyz);
+#if defined(GL_ES) || defined(__APPLE2__)
+        float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
+#else
+        float specular = lightModel(V, light, N.xyz);
+#endif
+
+        vec3 lightColor = color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
+                        u.lightColor * specular * u.lightSpecInt;
+
+        vec3 ambColor = (color.rgb*u.lightAmbInt + vec3(u.lightAmbInt)) * .5;
+
+        return vec4(smoothstep(u.sstepColorMin, u.sstepColorMax, lightColor + ambColor) , color.a);
+}
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxSOLID_AO) SUBROUTINE(_pixelColor) 
+#endif
+vec4 pixelColorAO(vec4 color, vec4 N)
+{
+        vec3 light =  normalize(u.lightDir);  // +vtx
+    
+        float lambertian = max(0.0, dot(light, N.xyz)); 
+
+        vec3 V = normalize(newVertex.xyz);
+#if defined(GL_ES) || defined(__APPLE2__)
+        float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
+#else
+        float specular = lightModel(V, light, N.xyz);
+#endif
+
+        vec3 lColor =  color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
+                       u.lightColor * specular * u.lightSpecInt;
+
+        return vec4(packing2Colors16bit(lColor, color.rgb), getDepth(newVertex.z));
+}
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxSOLID_DR) SUBROUTINE(_pixelColor)
+#endif
+vec4 pixelColorDR(vec4 color, vec4 N)
+{
+   return vec4(color.xyz, getDepth(newVertex.z));
+}
+
+
+#if !defined(__APPLE__)
+LAYUOT_INDEX(idxBLENDING) SUBROUTINE(_pixelColor)  
+#endif
+vec4 pixelColorBlending(vec4 color, vec4 N)
+{
+    if(color.a < u.alphaSkip ) { discard; return color; }
+    else return color;
+}
+
+vec4 mainFunc(vec2 ptCoord)
+{
+
+    vec4 N = getParticleNormal(ptCoord);
+    if(N.w >= 1.0 || N.z < u.alphaSkip) { discard; return vec4(0.0); } //return black color and max depth
+
+    newVertex    = mvVtxPos + vec4(0., 0., N.z * particleSize, 0.);
+
+//linear
+    gl_FragDepth = getDepth(newVertex.z);
+    //gl_FragDepth = depthSample(newVertex.z); // same but with zNear & zFar
+//logarithmic
+    //vec4 pPos = m.pMatrix * newVertex;
+    //gl_FragDepth = getDepth_(pPos.w);
+//Outerra
+    //vec4 pPos = m.pMatrix * newVertex;
+    //gl_FragDepth =  getDepth_(pPos.w+1.);
+
+    vec4 color = acquireColor(ptCoord);
+
+#if defined(GL_ES) || defined(__APPLE__)
+    #if defined(GL_ES) && !defined(GLCHAOSP_LIGHTVER_EXPERIMENTAL)
+        return u.lightActive==uint(1) ? pixelColorDirect(color, N) : pixelColorBlending(color, N);
+    #else        
+        switch(u.renderType) {
+            default:
+            case uint(0) : return pixelColorBlending(color, N);
+            case uint(1) : return pixelColorDirect(color, N);
+            case uint(2) : return pixelColorAO(color, N);
+            case uint(3) : return pixelColorDR(color, N);             
+        }
+        //return (u.pass >= uint(2)) ? vec4(color.xyz, getDepth(newVertex.z)) : (u.pass==uint(0) ? retColor : vec4(retColor.xyz, getDepth(newVertex.z))); 
+    #endif
+#else                          
+        return pixelColor(color, N); 
+#endif
+}
+
+void main()
+{
+
+    vec2 ptCoord = vec2(gl_PointCoord.x,1.0-gl_PointCoord.y); //upsideDown: revert point default
+    outColor = mainFunc(ptCoord);
+}
+#version 450
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 2018-2019 Michele Morrone
+//  All rights reserved.
+//
+//  mailto:me@michelemorrone.eu
+//  mailto:brutpitt@gmail.com
+//  
+//  https://github.com/BrutPitt
+//
+//  https://michelemorrone.eu
+//  https://BrutPitt.com
+//
+//  This software is distributed under the terms of the BSD 2-Clause license
+//  
+////////////////////////////////////////////////////////////////////////////////
+#line 17    //#version dynamically inserted
+#define LAYUOT_BINDING(X) layout (binding = X)
+#define LAYUOT_INDEX(X) layout(index = X)
+#define SUBROUTINE(X) subroutine(X)
+#define CONST const
+
+
+// Commenting both lines the error appears.
+// Commenting just one of the two, or neither, the compilation is successful.
+//
+ //#define DISABLE_SUB_GROUP_1
+// #define DISABLE_SUB_GROUP_2
+
+layout(std140) uniform;
+
+LAYUOT_BINDING(2) uniform _particlesData {
+    vec3  lightDir;          // align 0
+    float lightDiffInt;
+    vec3  lightColor;        // align 16
+    float lightSpecInt;
+    vec4  POV;
+    vec2  scrnRes;
+    vec2  invScrnRes;
+    float lightAmbInt ;
+    float lightShinExp;
+    float sstepColorMin;
+    float sstepColorMax;
+    float pointSize;
+    float pointDistAtten;
+    float alphaDistAtten;
+    float alphaSkip;
+    float alphaK;
+    float colIntensity;
+    float clippingDist;
+    float zNear;
+    float zFar;
+    float halfTanFOV;
+    float velIntensity;
+    float ySizeRatio;
+    float ptSizeRatio;
+    float pointspriteMinSize;
+    float ggxRoughness;
+    float ggxFresnel;
+    float shadowSmoothRadius;
+    float shadowGranularity;
+    float shadowBias;
+    float shadowDarkness;
+    float aoRadius;
+    float aoBias;
+    float aoDarkness;
+    float aoMul;
+    float aoModulate;
+    float aoStrong;
+    float dpAdjConvex;
+    float dpNormalTune;
+    uint  lightModel;
+    uint  lightActive;
+    uint  pass;
+    uint  renderType;
+} u;                    // 51*4 + APPLE
+
+LAYUOT_BINDING(4) uniform _tMat {
+    mat4 pMatrix;
+    mat4 mvMatrix;
+    mat4 mvpMatrix;
+    mat4 mvLightM;
+} m;
+
+#define RENDER_AO uint(1)
+#define RENDER_DEF uint(2)
+#define RENDER_SHADOW uint(4)
+
+LAYUOT_BINDING(1) uniform sampler2D tex;
+
+#define pixelColorOFFSET 0
+#define idxBLENDING (pixelColorOFFSET    )
+#define idxSOLID    (pixelColorOFFSET + 1)
+#define idxSOLID_AO (pixelColorOFFSET + 2)
+#define idxSOLID_DR (pixelColorOFFSET + 3)
+
+#if !defined(GL_ES) && !defined(DISABLE_SUB_GROUP_2)
+    subroutine vec4 _pixelColor(vec4 color, vec4 N);
+    subroutine uniform _pixelColor pixelColor;
+#endif
+
+#if !defined(GL_ES) && !defined(DISABLE_SUB_GROUP_1)
+    #define lightModelOFFSET 5
+    subroutine float _lightModel(vec3 V, vec3 L, vec3 N);
+    subroutine uniform _lightModel lightModel;
+#else
+    #define lightModelOFFSET 0
+#endif
+
+#define idxPHONG     (lightModelOFFSET    )
+#define idxBLINPHONG (lightModelOFFSET + 1)
+#define idxGGX       (lightModelOFFSET + 2)
+
+
+float packColor16(vec2 color)
+{
+    return uintBitsToFloat( packUnorm2x16(color) );
+}
+vec2 unPackColor16(float pkColor)
+{
+    return unpackUnorm2x16(floatBitsToUint(pkColor));
+}
+
+
+#if !defined(GL_ES)
+
+float packColor8(vec4 color)
+{
+    return uintBitsToFloat( packUnorm4x8(color) );
+}
+vec4 unPackColor8(float pkColor)
+{
+    return unpackUnorm4x8(floatBitsToUint(pkColor));
+}
+#endif
+
+float getViewZ(float D)
+{
+    float denom = u.zFar-u.zNear;
+    return (-2.0*u.zFar*u.zNear/denom) / (-(2. * D - 1.) + ((u.zFar+u.zNear)/denom));
+    //return (pMatrix[3].z / (-(2.* D -1) - pMatrix[2].z));
+}
+float getViewZ_(float D)
+{
+    return -pow(2.0, (2. * D - 1.) * log2(u.zFar/u.zNear)) * u.zNear;
+}
+
+// linear depth (persective)
+float depthSampleA(float Z)
+{
+    //float nonLinearDepth =  (zFar + zNear + 2.0 * zNear * zFar / linearDepth) / (zFar - zNear);
+    float nonLinearDepth =  -(m.pMatrix[2].z + m.pMatrix[3].z / Z) * .5 +.5;
+    return nonLinearDepth;
+}
+
+float getDepth(float Z) 
+{
+    float n = u.zNear, f = u.zFar;
+    //return (( -Z * (f+n) - 2*f*n ) / (-Z * (f-n))  + 1.0) * .5; //non linear -> same of depthSample
+    //return ( (- 2.f * depth - (f+n))/(f-n) + 1.0) * .5; // linearize + depthSample -> linear
+    return ( ((u.zFar+u.zNear)/(u.zFar-u.zNear)) + ((2.0*u.zFar*u.zNear/(u.zFar-u.zNear)) / Z) ) * .5 + .5;
+
+}
+
+//https://stackoverflow.com/questions/18182139/logarithmic-depth-buffer-linearization/18187212#18187212
+//https://outerra.blogspot.com/2012/11/maximizing-depth-buffer-range-and.html
+
+float getDepth_(float Z)
+{
+    return (log2(1.+Z) * (2.0 / log2(u.zFar + 1.0)) -1.0) * Z;
+
+}
+
+
+float form_01_to_m1p1(float f)  { return 2. * f - 1.; }
+float form_m1p1_to_01(float f)  { return  f*.5 + .5; }
+
+#if !defined(DISABLE_SUB_GROUP_1)
+LAYUOT_INDEX(idxPHONG) SUBROUTINE(_lightModel) 
+#endif
+float specularPhong(vec3 V, vec3 L, vec3 N)
+{
+    vec3 R = reflect(L, N);
+    float specAngle = max(dot(R, V), 0.0);
+
+    return pow(specAngle, u.lightShinExp * .25);
+}
+
+#if !defined(DISABLE_SUB_GROUP_1)
+LAYUOT_INDEX(idxBLINPHONG) SUBROUTINE(_lightModel) 
+#endif
+float specularBlinnPhong(vec3 V, vec3 L, vec3 N)
+{
+    vec3 H = normalize(L - V);
+    float specAngle = max(dot(H, N), 0.0);
+
+    return pow(specAngle, u.lightShinExp);
+
+}
+
+#if !defined(DISABLE_SUB_GROUP_1)
+LAYUOT_INDEX(idxGGX) SUBROUTINE(_lightModel) 
+#endif
+float specularGGX(vec3 V, vec3 L, vec3 N) 
+{
+    float alpha = u.ggxRoughness*u.ggxRoughness;
+    float alphaSqr = alpha * alpha;
+
+    vec3 H = normalize(L - V); // View = -
+    float dotLH = max(0.0, dot(L,H));
+    float dotNH = max(0.0, dot(N,H));
+    float dotNL = max(0.0, dot(N,L));
+
+    // D (GGX normal distribution)
+    float denom = dotNH * dotNH * (alphaSqr - 1.0) + 1.0;
+    float D = alphaSqr / (3.141592653589793 * denom * denom);
+
+    // F (Fresnel term)
+    float F = u.ggxFresnel + (1.0 - u.ggxFresnel) * pow(1.0 - dotLH, 5.0);
+    float k = 0.5 * alpha;
+    float k2 = k * k;
+
+    return dotNL * D * F / (dotLH*dotLH*(1.0-k2)+k2);
+}
+
+
+vec4 getParticleNormal(vec2 coord)
+{
+    vec4 N;
+    N.xy = (coord - vec2(.5))*2.0;  // diameter ZERO centred -> radius
+    N.w = dot(N.xy, N.xy);          // magnitudo
+    N.z = sqrt(1.0-N.w);            // Z convexity
+    N.xyz = normalize(N.xyz); 
+    
+    return N;
+}
+
+vec3 getSimpleNormal(float z, sampler2D depthData)
+{
+    float gradA = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
+    float gradB = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
+
+    vec2 m = u.invScrnRes * -z;// * vec2(u.scrnRes.x/u.scrnRes.y * u.halfTanFOV, u.halfTanFOV);
+    float invTanFOV = u.dpAdjConvex/u.halfTanFOV;
+
+    vec3 N0 = cross(vec3(vec2( 1., 0.)*m, gradA*invTanFOV), vec3(vec2( 0., 1.)*m, gradB*invTanFOV));
+
+    return normalize (N0);
+}
+
+vec3 getSelectedNormal(float z, sampler2D depthData)
+{
+
+    float gradA = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
+    float gradB = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
+    float gradC = z - getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2(-1., 0.)), 0).w);
+    float gradD = z - getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0.,-1.)), 0).w);
+
+    vec2 m = u.invScrnRes * -z; //vec2(u.scrnRes.x/u.scrnRes.y * u.halfTanFOV, u.halfTanFOV);
+    float invTanFOV = u.dpAdjConvex/u.halfTanFOV;
+
+    vec3 V1 = abs(gradA-gradC)>u.dpNormalTune && abs(gradA)<abs(gradC) ? vec3(vec2( 1., 0.)*m, gradA*invTanFOV) : vec3(vec2(1., 0.)*m, gradC*invTanFOV);
+    vec3 V2 = abs(gradB-gradD)>u.dpNormalTune && abs(gradB)<abs(gradD) ? vec3(vec2( 0., 1.)*m, gradB*invTanFOV) : vec3(vec2(0., 1.)*m, gradD*invTanFOV);
+    vec3 N0 = cross(V1, V2);
+
+
+    return normalize (N0);
+}
+
+
+in vec4 mvVtxPos;
+
+in float pointDistance;
+in vec4 particleColor;
+in float particleSize;
+
+//in vec4 shadowlightView;
+
+layout (location = 0) out vec4 outColor;
+
+
+float luminance(vec3 c) { return dot(c, vec3(0.2990, 0.5870, 0.1140)); }
+
+float getAlpha(float alpha)
+{
+
+    CONST float alphaAtten = exp(-0.1*sign(pointDistance)*pow(abs(pointDistance+1.f)+1.f, u.alphaDistAtten*.1));
+    return clamp(alpha * alphaAtten * u.alphaK, 0.0, 1.0);
+
+}
+
+vec4 acquireColor(vec2 coord)
+{
+    if(pointDistance<u.clippingDist) discard;    
+
+    vec4 color = particleColor * texture(tex, coord).r;
+
+    return vec4(color.rgb * u.colIntensity, getAlpha(color.a)) ;
+}
+
+
+vec4 newVertex;
+
+vec3 packing2Colors16bit(vec3 colorA, vec3 colorB)
+{
+    return vec3(packColor16(colorA.rg),
+                packColor16(vec2(colorA.b, colorB.r)),
+                packColor16(colorB.gb));
+}
+
+#if !defined(GL_ES)
+vec3 packing2Colors8bit(vec3 colorA, vec3 colorB)
+{
+    return vec3(packColor8(vec4(0.0,colorA.rgb)),
+                packColor8(vec4(0.0,colorB.rgb)), 0.0);
+}
+#endif
+
+#if !defined(DISABLE_SUB_GROUP_2)
+LAYUOT_INDEX(idxSOLID) SUBROUTINE(_pixelColor) 
+#endif
+vec4 pixelColorDirect(vec4 color, vec4 N)
+{
+        vec3 light =  normalize(u.lightDir);  // +vtx
+    
+        float lambertian = max(0.0, dot(light, N.xyz)); 
+
+        vec3 V = normalize(newVertex.xyz);
+#if defined(GL_ES) || defined(DISABLE_SUB_GROUP_1)
+        float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
+#else
+        float specular = lightModel(V, light, N.xyz);
+#endif
+
+        vec3 lightColor = color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
+                        u.lightColor * specular * u.lightSpecInt;
+
+        vec3 ambColor = (color.rgb*u.lightAmbInt + vec3(u.lightAmbInt)) * .5;
+
+        return vec4(smoothstep(u.sstepColorMin, u.sstepColorMax, lightColor + ambColor) , color.a);
+}
+
+#if !defined(DISABLE_SUB_GROUP_2)
+LAYUOT_INDEX(idxSOLID_AO) SUBROUTINE(_pixelColor) 
+#endif
+vec4 pixelColorAO(vec4 color, vec4 N)
+{
+        vec3 light =  normalize(u.lightDir);  // +vtx
+    
+        float lambertian = max(0.0, dot(light, N.xyz)); 
+
+        vec3 V = normalize(newVertex.xyz);
+#if defined(GL_ES) || defined(DISABLE_SUB_GROUP_1)
+        float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
+#else
+        float specular = lightModel(V, light, N.xyz);
+#endif
+
+        vec3 lColor =  color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
+                       u.lightColor * specular * u.lightSpecInt;
+
+        return vec4(packing2Colors16bit(lColor, color.rgb), getDepth(newVertex.z));
+}
+
+#if !defined(DISABLE_SUB_GROUP_2)
+LAYUOT_INDEX(idxSOLID_DR) SUBROUTINE(_pixelColor)
+#endif
+vec4 pixelColorDR(vec4 color, vec4 N)
+{
+   return vec4(color.xyz, getDepth(newVertex.z));
+}
+
+
+#if !defined(DISABLE_SUB_GROUP_2)
+LAYUOT_INDEX(idxBLENDING) SUBROUTINE(_pixelColor)  
+#endif
+vec4 pixelColorBlending(vec4 color, vec4 N)
+{
+    if(color.a < u.alphaSkip ) { discard; return color; }
+    else return color;
+}
+
+vec4 mainFunc(vec2 ptCoord)
+{
+
+    vec4 N = getParticleNormal(ptCoord);
+    if(N.w >= 1.0 || N.z < u.alphaSkip) { discard; return vec4(0.0); } //return black color and max depth
+
+    newVertex    = mvVtxPos + vec4(0., 0., N.z * particleSize, 0.);
+
+//linear
+    gl_FragDepth = getDepth(newVertex.z);
+    //gl_FragDepth = depthSample(newVertex.z); // same but with zNear & zFar
+//logarithmic
+    //vec4 pPos = m.pMatrix * newVertex;
+    //gl_FragDepth = getDepth_(pPos.w);
+//Outerra
+    //vec4 pPos = m.pMatrix * newVertex;
+    //gl_FragDepth =  getDepth_(pPos.w+1.);
+
+    vec4 color = acquireColor(ptCoord);
+
+#if defined(GL_ES) || defined(DISABLE_SUB_GROUP_2)
+    #if defined(GL_ES) && !defined(GLCHAOSP_LIGHTVER_EXPERIMENTAL)
+        return u.lightActive==uint(1) ? pixelColorDirect(color, N) : pixelColorBlending(color, N);
+    #else        
+        switch(u.renderType) {
+            default:
+            case uint(0) : return pixelColorBlending(color, N);
+            case uint(1) : return pixelColorDirect(color, N);
+            case uint(2) : return pixelColorAO(color, N);
+            case uint(3) : return pixelColorDR(color, N);             
+        }
+        //return (u.pass >= uint(2)) ? vec4(color.xyz, getDepth(newVertex.z)) : (u.pass==uint(0) ? retColor : vec4(retColor.xyz, getDepth(newVertex.z))); 
+    #endif
+#else                          
+        return pixelColor(color, N); 
+#endif
+}
+
+void main()
+{
+
+    vec2 ptCoord = vec2(gl_PointCoord.x,1.0-gl_PointCoord.y); //upsideDown: revert point default
+    outColor = mainFunc(ptCoord);
+}
+#version 450
+////////////////////////////////////////////////////////////////////////////////
+//
+//  Copyright (c) 2018-2019 Michele Morrone
+//  All rights reserved.
+//
+//  mailto:me@michelemorrone.eu
+//  mailto:brutpitt@gmail.com
+//  
+//  https://github.com/BrutPitt
+//
+//  https://michelemorrone.eu
+//  https://BrutPitt.com
+//
+//  This software is distributed under the terms of the BSD 2-Clause license
+//  
+////////////////////////////////////////////////////////////////////////////////
+#line 17    //#version dynamically inserted
+#define LAYOUT_BINDING(X) layout (binding = X)
+#define LAYOUT_INDEX(X) layout(index = X)
+#define SUBROUTINE(X) subroutine(X)
+#define CONST const
+
+out vec4 mvVtxPos;
+#ifdef SHADOW_PASS
+out vec4 solidVtx;
+#endif
+out float pointDistance;
+out vec4 particleColor;
+out float particleSize;
+
+layout(std140) uniform;
+
+layout (location = 0) in vec4 a_ActualPoint;
+
+LAYOUT_BINDING(0) uniform sampler2D paletteTex;
+
+LAYOUT_BINDING(2) uniform _particlesData {
+    vec3  lightDir;          // align 0
+    float lightDiffInt;
+    vec3  lightColor;        // align 16
+    float lightSpecInt;
+    vec4  POV;
+    vec2  scrnRes;
+    vec2  invScrnRes;
+    float lightAmbInt ;
+    float lightShinExp;
+    float sstepColorMin;
+    float sstepColorMax;
+    float pointSize;
+    float pointDistAtten;
+    float alphaDistAtten;
+    float alphaSkip;
+    float alphaK;
+    float colIntensity;
+    float clippingDist;
+    float zNear;
+    float zFar;
+    float halfTanFOV;
+    float velIntensity;
+    float ySizeRatio;
+    float ptSizeRatio;
+    float pointspriteMinSize;
+    float ggxRoughness;
+    float ggxFresnel;
+    float shadowSmoothRadius;
+    float shadowGranularity;
+    float shadowBias;
+    float shadowDarkness;
+    float aoRadius;
+    float aoBias;
+    float aoDarkness;
+    float aoMul;
+    float aoModulate;
+    float aoStrong;
+    float dpAdjConvex;
+    float dpNormalTune;
+    uint  lightModel;
+    uint  lightActive;
+    uint  pass;
+    uint  renderType;
+} u;
+
+LAYOUT_BINDING(4) uniform _tMat {
+    mat4 pMatrix;
+    mat4 mvMatrix;
+    mat4 mvpMatrix;
+    mat4 mvLightM;
+} m;
+
+#ifndef GL_ES
+out gl_PerVertex
+{
+    vec4 gl_Position;
+    float gl_PointSize;
+    //float gl_ClipDistance[1];
+};
+#endif
+
+
+#ifndef GL_ES
+    subroutine vec4 _colorResult();
+    subroutine uniform _colorResult colorResult;
+#endif
+
+// Load OBJ
+#ifndef GL_ES
+LAYOUT_INDEX(1) SUBROUTINE(_colorResult) vec4 objColor()
+{
+    uint packCol = floatBitsToUint(a_ActualPoint.w);
+    vec4 col = unpackUnorm4x8(packCol);
+
+    return col;
+}
+#endif
+
+LAYOUT_INDEX(0) SUBROUTINE(_colorResult) vec4 velColor()
+{
+    float vel = a_ActualPoint.w*u.velIntensity;
+    return vec4(texture(paletteTex, vec2(vel,0.f)).rgb,1.0);
+}
+
+
+
+void main()
+{
+#ifdef SHADOW_PASS
+    vec4 vtxPos =  m.mvLightM  * vec4(a_ActualPoint.xyz,1.f);
+    solidVtx = m.mvMatrix * vec4(a_ActualPoint.xyz,1.f);
+#else
+    vec4 vtxPos = m.mvMatrix * vec4(a_ActualPoint.xyz,1.f);
+#endif
+
+    #if defined(GL_ES) || defined(TEST_WGL)
+        particleColor = velColor();
+    #else
+        particleColor = colorResult();
+    #endif
+    gl_Position = m.pMatrix * vtxPos;
+
+    mvVtxPos = vec4(vtxPos.xyz,1.0);
+
+    pointDistance = gl_Position.w; //length(vtxPos.w);
+
+    float ptAtten = exp(-0.01*sign(pointDistance)*pow(abs(pointDistance)+1.f, u.pointDistAtten*.1));
+    float size = u.pointSize * ptAtten * u.ySizeRatio;
+    particleSize = size*u.invScrnRes.y;
+
+    vec4 pt  = m.pMatrix * vec4(vtxPos.xy + vec2(size) * u.ptSizeRatio , vtxPos.zw);
+
+    // NVidia & Intel do not supports gl_PointSize<1.0 -> point disappear
+    // AMD driver (some times) supports gl_PointSize from 0.1
+    // Look in Info dialog: point Range and Granularity
+    gl_PointSize = max(distance(gl_Position.xyz, pt.xyz)/max(abs(gl_Position.w),.0001), u.pointspriteMinSize);
+
+//    float fc = .5 * log2(u.zFar+1);
+//    gl_Position.z = gl_Position.w * (log2( max(.000001, 1.+gl_Position.w) ) * fc - 1.);
+}
+//------------------------------------------------------------------------------
+//  Copyright (c) 2018-2019 Michele Morrone
+//  All rights reserved.
+//
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
+//  
+//  This software is distributed under the terms of the BSD 2-Clause license
+//------------------------------------------------------------------------------
+#line 12    //#version dynamically inserted
 
 
 in vec2 viewRay;
@@ -26,10 +1609,10 @@ uniform vec4 aoVals; // x = Bias, y = Radius, z = darkness
 
 out vec4 outColor;
 
-LAYUOT_BINDING(5) uniform sampler2D prevData;
-LAYUOT_BINDING(6) uniform sampler2D noise;
-LAYUOT_BINDING(7) uniform sampler2D ssaoSample;
-//LAYUOT_BINDING(7) uniform sampler2D shadowTex;
+LAYOUT_BINDING(5) uniform sampler2D prevData;
+LAYOUT_BINDING(6) uniform sampler2D noise;
+LAYOUT_BINDING(7) uniform sampler2D ssaoSample;
+//LAYOUT_BINDING(7) uniform sampler2D shadowTex;
 
 /*
 vec4 fn(vec2 uv) {
@@ -176,7 +1759,7 @@ void main()
     float depth = texture(prevData,gl_FragCoord.xy*u.invScrnRes).w;
     if(depth<=.01) { discard; outColor = vec4(0.0); return; }
 
-    float z = getViewZ(depth);
+    float z = restoreZ(depth);
     vec4 vtx = vec4(viewRay * z, z, 1.0);
 
     vec3 N = getSimpleNormal(z, prevData);
@@ -200,7 +1783,7 @@ void main()
             offset.xy /= -offset.w;
             offset.xy = offset.xy * 0.5 + 0.5;
 
-            float sampleDepth = getViewZ(texture(prevData,offset.xy).w);
+            float sampleDepth = restoreZ(texture(prevData,offset.xy).w);
             //float sampleDepth = CalcViewZ(offset.xy);
 
             AO += sampleDepth >= sampleP.z + u.aoBias ? (1.0-u.aoDarkness) * u.aoMul : 0.0;
@@ -870,23 +2453,19 @@ vec4 gPassModuledA(sampler2D tex, vec2 direction, int pass)
     return  accumBuff;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-//
+//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 12    //#version dynamically inserted
 
 in vec2 texCoord;
 
@@ -929,10 +2508,12 @@ out vec2 texCoord;
 out vec4 particleColor;
 out float pointDistance;
 out float particleSize;
-out vec4 shadowlightView;
 
 
-LAYUOT_BINDING(4) uniform _tMat {
+LAYOUT_BINDING(4) uniform _tMat {
+    mat4 mMatrix;
+    mat4 vMatrix;
+    mat4 invMV  ;
     mat4 pMatrix;
     mat4 mvMatrix;
     mat4 mvpMatrix;
@@ -957,7 +2538,6 @@ void main(void)
 {
     pointDistance = pointDist[0];
     particleColor = vertParticleColor[0];
-    shadowlightView = vertShadowlightView[0];
 
     float sz = gl_in[0].gl_PointSize;
     particleSize = sz;
@@ -990,23 +2570,20 @@ void main(void)
 }
 
 
-////////////////////////////////////////////////////////////////////////////////
-//
+//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 14    //#version dynamically inserted
+
 
 out float pointDist;
 out vec4 vertParticleColor;
@@ -1058,10 +2635,10 @@ uniform sampler2D paletteTex;
 #else
 layout (location = 0) out vec4 color;
 
-LAYUOT_BINDING(0) uniform sampler2D paletteTex;
+LAYOUT_BINDING(0) uniform sampler2D paletteTex;
 #endif
 
-LAYUOT_BINDING(2) uniform _cmData {
+LAYOUT_BINDING(2) uniform _cmData {
     vec3 hslData;
     float offsetPoint;
     float palRange;
@@ -1098,23 +2675,20 @@ void main(void)
     //color1 = texelFetch(paletteTex, int(256.0*vData.y)+int(gl_FragCoord.x*vData.z),0);
     //color = vec4(0.0, 0.8, 1.0, 1.0);
    
-}////////////////////////////////////////////////////////////////////////////////
-//
+}//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 14    //#version dynamically inserted
+
 
 //This is an HEADER/INCLUDE file for RadialBlur2PassFrag.glsl and cmTextureFrag.glsl
 
@@ -1303,7 +2877,7 @@ vec3 rgb2hcy(vec3 rgb)
 #ifdef GL_ES
 uniform sampler2D u_colorTexture;
 #else
-LAYUOT_BINDING(0) uniform sampler2D u_colorTexture;
+LAYOUT_BINDING(0) uniform sampler2D u_colorTexture;
 #endif
 
 uniform vec2 invScrnSize; 
@@ -1370,35 +2944,29 @@ void main(void)
 
     // Are outer samples of the tab beyond the edge ... 
     fragColor = vec4(lumaB  < lumaMin || lumaB  > lumaMax ? rgbA : rgbB, 1.0); 
-}////////////////////////////////////////////////////////////////////////////////
-//
+}//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 14    //#version dynamically inserted
 layout(std140) uniform;
 
-LAYUOT_BINDING(1) uniform sampler2D tex;
-
-LAYUOT_BINDING(2) uniform _particlesData {
+LAYOUT_BINDING(2) uniform _particlesData {
     vec3  lightDir;          // align 0
     float lightDiffInt;
     vec3  lightColor;        // align 16
     float lightSpecInt;
-    vec4  POV;
     vec2  scrnRes;
     vec2  invScrnRes;
+    vec3  rotCenter;
     float lightAmbInt ;
     float lightShinExp;
     float sstepColorMin;
@@ -1423,6 +2991,7 @@ LAYUOT_BINDING(2) uniform _particlesData {
     float shadowGranularity;
     float shadowBias;
     float shadowDarkness;
+    float shadowDetail;
     float aoRadius;
     float aoBias;
     float aoDarkness;
@@ -1435,19 +3004,31 @@ LAYUOT_BINDING(2) uniform _particlesData {
     uint  lightActive;
     uint  pass;
     uint  renderType;
-} u;                    // 51*4 + APPLE
+} u;                    // 54*4
 
-LAYUOT_BINDING(4) uniform _tMat {
+LAYOUT_BINDING(9) uniform _clippingPlanes {
+    vec4  clipPlane[3];
+    vec4  boundaryColor[3];
+    uvec4 planeActive;
+    uvec4 colorActive;
+    float thickness;
+    bool  additiveSpace;
+    bool  atLeastOneActive;
+} pl;
+
+LAYOUT_BINDING(4) uniform _tMat {
+    mat4 mMatrix;
+    mat4 vMatrix;
+    mat4 invMV  ;
     mat4 pMatrix;
     mat4 mvMatrix;
     mat4 mvpMatrix;
     mat4 mvLightM;
 } m;
 
-#if !defined(GL_ES) && !defined(__APPLE__)
-    #define lightModelOFFSET 5
+#if !defined(GL_ES) && defined(GLCHAOSP_USES_LIGHTMODELS_SUBS)
     subroutine float _lightModel(vec3 V, vec3 L, vec3 N);
-    subroutine uniform _lightModel lightModel;
+    LAYOUT_LOCATION(0) subroutine uniform _lightModel lightModel;
 #else
     #define lightModelOFFSET 0
 #endif
@@ -1455,7 +3036,6 @@ LAYUOT_BINDING(4) uniform _tMat {
 #define idxPHONG     (lightModelOFFSET    )
 #define idxBLINPHONG (lightModelOFFSET + 1)
 #define idxGGX       (lightModelOFFSET + 2)
-
 
 float packColor16(vec2 color)
 {
@@ -1465,7 +3045,6 @@ vec2 unPackColor16(float pkColor)
 {
     return unpackUnorm2x16(floatBitsToUint(pkColor));
 }
-
 
 #if !defined(GL_ES)
 /*
@@ -1497,69 +3076,145 @@ vec4 unPackColor8(float pkColor)
 }
 #endif
 
-float getViewZ(float D)
+// Clipping planes
+///////////////////////////////////////
+mat4 translate(mat4 mt, vec3 v) 
+{
+    mt[3] = mt[0] * v.x + mt[1] * v.y + mt[2] * v.z + mt[3]; 
+    return mt; 
+}
+
+float returnClipDistance(vec4 vtx, int plane)
+{
+    mat4 mt=mat4(1.f);
+    vec4 pt = m.invMV * vec4(vtx.xyz, 1.0); // if modelViewd vertex
+
+    mt = translate(mt, u.rotCenter);
+
+    return -(dot( mt * pt, pl.clipPlane[plane]));
+}
+
+vec4 colorBoundary(vec4 vtx, int plane)
+{
+    vec4 retColor = vec4(0.0);
+    if(bool(pl.planeActive[plane]) && bool(pl.colorActive[plane])) { 
+        float clipDist = returnClipDistance(vtx, plane);
+        if(pl.additiveSpace) { 
+            if(clipDist<=0.0 && clipDist>-pl.thickness) retColor = pl.boundaryColor[plane];
+        } else {
+            if(clipDist>=0.0 && clipDist< pl.thickness) retColor = pl.boundaryColor[plane];
+        }
+    }
+    return retColor;
+}
+bool clippedPlane(vec4 vtx, int plane)
+{
+    return bool(pl.planeActive[plane]) ? 
+                (pl.additiveSpace ? bool(returnClipDistance(vtx, plane)>0.0) : bool(returnClipDistance(vtx, plane)<0.0)) : 
+                (pl.additiveSpace ? true : false);
+
+}
+
+bool clippedPoint(vec4 vtx)
+{
+    return pl.atLeastOneActive ? 
+               (pl.additiveSpace ?
+                    clippedPlane(vtx, 0) && clippedPlane(vtx, 1) && clippedPlane(vtx, 2)  :
+                    clippedPlane(vtx, 0) || clippedPlane(vtx, 1) || clippedPlane(vtx, 2)) :
+               false;
+}
+
+// Z Buffer
+///////////////////////////////////////
+float getLinearZ(float D)
 {
     float denom = u.zFar-u.zNear;
     return (-2.0*u.zFar*u.zNear/denom) / (-(2. * D - 1.) + ((u.zFar+u.zNear)/denom));
-    //return (pMatrix[3].z / (-(2.* D -1) - pMatrix[2].z));
 }
-float getViewZ_(float D)
+
+float getLogZ(float D)
 {
-    return -pow(2.0, (2. * D - 1.) * log2(u.zFar/u.zNear)) * u.zNear;
+    //return -pow(2.0, (2. * D - 1.) * log2(u.zFar/u.zNear)) * u.zNear;
+    
+    float C = u.zNear/u.zFar;
+    //return (exp(-(2. * D - 1.)*log(C*u.zFar+1.)) - 1.)/C;
+
+    //return (-exp((2. * D - 1.)*log(u.zFar / u.zNear)))*u.zNear;
+
+    float FC = 1.0/log(u.zFar*C + 1.);
+    return -(exp((2. * D - 1.)/FC)-1.0)/C;
+
 }
 
 // linear depth (persective)
-float depthSampleA(float Z)
+float getLinearDepth_(float Z)
 {
     //float nonLinearDepth =  (zFar + zNear + 2.0 * zNear * zFar / linearDepth) / (zFar - zNear);
     float nonLinearDepth =  -(m.pMatrix[2].z + m.pMatrix[3].z / Z) * .5 +.5;
     return nonLinearDepth;
 }
 
-float getDepth(float Z) 
+float getLinearDepth(float Z) 
 {
-    float n = u.zNear, f = u.zFar;
-    //return (( -Z * (f+n) - 2*f*n ) / (-Z * (f-n))  + 1.0) * .5; //non linear -> same of depthSample
-    //return ( (- 2.f * depth - (f+n))/(f-n) + 1.0) * .5; // linearize + depthSample -> linear
     return ( ((u.zFar+u.zNear)/(u.zFar-u.zNear)) + ((2.0*u.zFar*u.zNear/(u.zFar-u.zNear)) / Z) ) * .5 + .5;
-
 }
 
 //https://stackoverflow.com/questions/18182139/logarithmic-depth-buffer-linearization/18187212#18187212
 //https://outerra.blogspot.com/2012/11/maximizing-depth-buffer-range-and.html
 
-float getDepth_(float Z)
+float getLogDepth(float z)
 {
     //float C = .001;
-    //return (2.*log(C*-Z + 1.) / log(C*u.zFar + 1.) - 1.) * Z;
-     //return (log2((Z+1) / u.zNear) / log2(u.zFar / u.zNear)) * .5 + .5;
-    return (log2(1.+Z) * (2.0 / log2(u.zFar + 1.0)) -1.0) * Z;
 
+    float C = u.zNear/u.zFar;
+    //return (log(C * z + 1.) / log(C * u.zFar + 1.) * w) * .5 + .5;
+
+    float FC = 1.0/log(u.zFar*C + 1.);
+    float logz = log(z*C + 1.)*FC  * .5 + .5;
+    return logz;
+
+}
+//#define LOG_ZBUFF
+float getFragDepth(float z)
+{
+#ifdef LOG_ZBUFF
+    //vec4 pPos = m.pMatrix * vtx;
+    return getLogDepth(-z);
+#else
+    return getLinearDepth(z);
+#endif
+}
+
+float restoreZ(float D)
+{
+#ifdef LOG_ZBUFF
+    return getLogZ(D);
+#else
+    return getLinearZ(D);
+#endif
 }
 
 
 float form_01_to_m1p1(float f)  { return 2. * f - 1.; }
 float form_m1p1_to_01(float f)  { return  f*.5 + .5; }
 
-#if !defined(__APPLE__)
-LAYUOT_INDEX(idxPHONG) SUBROUTINE(_lightModel) 
+#if defined(GLCHAOSP_USES_LIGHTMODELS_SUBS)
+LAYOUT_INDEX(idxPHONG) SUBROUTINE(_lightModel) 
 #endif
 float specularPhong(vec3 V, vec3 L, vec3 N)
 {
-    //vec3 V = normalize(mvVtxPos.xyz);
     vec3 R = reflect(L, N);
     float specAngle = max(dot(R, V), 0.0);
 
     return pow(specAngle, u.lightShinExp * .25);
 }
 
-#if !defined(__APPLE__)
-LAYUOT_INDEX(idxBLINPHONG) SUBROUTINE(_lightModel) 
+#if defined(GLCHAOSP_USES_LIGHTMODELS_SUBS)
+LAYOUT_INDEX(idxBLINPHONG) SUBROUTINE(_lightModel) 
 #endif
 float specularBlinnPhong(vec3 V, vec3 L, vec3 N)
 {
 // point on surface of sphere in eye space
-    //vec3 V = normalize(mvVtxPos.xyz);
     vec3 H = normalize(L - V);
     float specAngle = max(dot(H, N), 0.0);
 
@@ -1567,15 +3222,14 @@ float specularBlinnPhong(vec3 V, vec3 L, vec3 N)
 
 }
 
-#if !defined(__APPLE__)
-LAYUOT_INDEX(idxGGX) SUBROUTINE(_lightModel) 
+#if defined(GLCHAOSP_USES_LIGHTMODELS_SUBS)
+LAYOUT_INDEX(idxGGX) SUBROUTINE(_lightModel) 
 #endif
 float specularGGX(vec3 V, vec3 L, vec3 N) 
 {
     float alpha = u.ggxRoughness*u.ggxRoughness;
     float alphaSqr = alpha * alpha;
 
-    //vec3 V = normalize(mvVtxPos.xyz);
     vec3 H = normalize(L - V); // View = -
     float dotLH = max(0.0, dot(L,H));
     float dotNH = max(0.0, dot(N,H));
@@ -1594,14 +3248,6 @@ float specularGGX(vec3 V, vec3 L, vec3 N)
 }
 
 
-/*
-float logzbuf( float z ) {
-    z = -z;
-    float fc = 2.0/log2(u.zFar + 1.0);
-    return (log(1. + z) * fc - 1.) * z;
-}
-
-  */
 vec4 getParticleNormal(vec2 coord)
 {
     vec4 N;
@@ -1615,8 +3261,8 @@ vec4 getParticleNormal(vec2 coord)
 
 vec3 getSimpleNormal(float z, sampler2D depthData)
 {
-    float gradA = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
-    float gradB = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
+    float gradA = restoreZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
+    float gradB = restoreZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
 
     vec2 m = u.invScrnRes * -z;// * vec2(u.scrnRes.x/u.scrnRes.y * u.halfTanFOV, u.halfTanFOV);
     float invTanFOV = u.dpAdjConvex/u.halfTanFOV;
@@ -1629,48 +3275,18 @@ vec3 getSimpleNormal(float z, sampler2D depthData)
 vec3 getSelectedNormal(float z, sampler2D depthData)
 {
 
-    float gradA = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
-    float gradB = getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
-    float gradC = z - getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2(-1., 0.)), 0).w);
-    float gradD = z - getViewZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0.,-1.)), 0).w);
-    //float gradE = form_01_to_m1p1(texelFetch(prevData,ivec2(uv + vec2( 1., 1.)), 0).w);
-    //float gradF = form_01_to_m1p1(texelFetch(prevData,ivec2(uv + vec2(-1.,-1.)), 0).w);
-    //float gradG = form_01_to_m1p1(texelFetch(prevData,ivec2(uv + vec2( 1.,-1.)), 0).w);
-    //float gradH = form_01_to_m1p1(texelFetch(prevData,ivec2(uv + vec2(-1., 1.)), 0).w);
+    float gradA = restoreZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 1., 0.)), 0).w) - z;
+    float gradB = restoreZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0., 1.)), 0).w) - z;
+    float gradC = z - restoreZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2(-1., 0.)), 0).w);
+    float gradD = z - restoreZ(texelFetch(depthData,ivec2(gl_FragCoord.xy + vec2( 0.,-1.)), 0).w);
 
     vec2 m = u.invScrnRes * -z; //vec2(u.scrnRes.x/u.scrnRes.y * u.halfTanFOV, u.halfTanFOV);
     float invTanFOV = u.dpAdjConvex/u.halfTanFOV;
-/*
-    const float eps = .00001;
-    gradA = max(abs(gradA),eps) * sign(gradA);
-    gradB = max(abs(gradB),eps) * sign(gradB);
-    gradC = max(abs(gradC),eps) * sign(gradC);
-    gradD = max(abs(gradD),eps) * sign(gradD);
-*/
-        //V1 = abs(gradA)<abs(gradC) ? vec3(vec2( 1., 0.)*m, gradA*invTanFOV) : vec3(vec2(1., 0.)*m, gradC*invTanFOV);
-        //V2 = abs(gradB)<abs(gradD) ? vec3(vec2( 0., 1.)*m, gradB*invTanFOV) : vec3(vec2(0., 1.)*m, gradD*invTanFOV);
+
     vec3 V1 = abs(gradA-gradC)>u.dpNormalTune && abs(gradA)<abs(gradC) ? vec3(vec2( 1., 0.)*m, gradA*invTanFOV) : vec3(vec2(1., 0.)*m, gradC*invTanFOV);
     vec3 V2 = abs(gradB-gradD)>u.dpNormalTune && abs(gradB)<abs(gradD) ? vec3(vec2( 0., 1.)*m, gradB*invTanFOV) : vec3(vec2(0., 1.)*m, gradD*invTanFOV);
     vec3 N0 = cross(V1, V2);
 
-/*
-    vec3 V1 = vec3(vec2( 1., 0.)*m, gradA*invTanFOV);
-    vec3 V2 = vec3(vec2( 0., 1.)*m, gradB*invTanFOV);
-    vec3 N0 = cross(V1, V2);
-*/
-    //vec3 N0 = cross(vec3(vec2( 1., 0.)*m, (gradA-zEye)*z), vec3(vec2( 0., 1.)*m, (gradB-zEye)*z));
-    //vec3 N1 = cross(vec3(vec2(-1., 0.)*m, (gradC-zEye)*z), vec3(vec2( 0.,-1.)*m, (gradD-zEye)*z));
-    //vec3 N2 = cross(vec3(vec2( 0.,-1.)*m, (gradD-zEye)*z), vec3(vec2( 1., 0.)*m, (gradA-zEye)*z));
-    //vec3 N3 = cross(vec3(vec2( 0., 1.)*m, (gradB-zEye)*z), vec3(vec2(-1., 0.)*m, (gradC-zEye)*z));
-    //vec3 N2 = cross(vec3(vec2( 1., 1.)*m, (gradE-zEye)*z), vec3(vec2(-1., 1.)*m, (gradH-zEye)*z));
-    //vec3 N3 = cross(vec3(vec2(-1.,-1.)*m, (gradF-zEye)*z), vec3(vec2( 1.,-1.)*m, (gradG-zEye)*z));
-
-            
-    //N0    = normalize(dot(N0,N0)<dot(N1,N1) ? N0 : N1);
-    //N2    = normalize(dot(N2,N2)>dot(N3,N3) ? N2 : N3);
-    //N.xyz = normalize(dot(N0,N0)>dot(N2,N2) ? N0 : N2);
-    //N.xyz = normalize(min(N0, min(N1, min(N2,N3))));
-    //N.xyz = normalize(min(N0,N1));
 
     return normalize (N0);
 }
@@ -1678,7 +3294,6 @@ vec3 getSelectedNormal(float z, sampler2D depthData)
 #define RENDER_AO uint(1)
 #define RENDER_DEF uint(2)
 #define RENDER_SHADOW uint(4)
-
 ////////////////////////////////////////////////////////////////////////////////
 //
 //  Copyright (c) 2018-2019 Michele Morrone
@@ -1697,8 +3312,8 @@ vec3 getSelectedNormal(float z, sampler2D depthData)
 ////////////////////////////////////////////////////////////////////////////////
 #line 17    //#version dynamically inserted
 
-LAYUOT_BINDING(0) uniform sampler2D billboardTex;
-LAYUOT_BINDING(1) uniform sampler2D pointTex;
+LAYOUT_BINDING(0) uniform sampler2D billboardTex;
+LAYOUT_BINDING(1) uniform sampler2D pointTex;
 
 uniform float mixingVal;
 
@@ -1713,23 +3328,20 @@ void main ()
 
     color = mix(c0, c1, mixingVal);
 
-}////////////////////////////////////////////////////////////////////////////////
-//
+}//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 14    //#version dynamically inserted
+
 
 layout (location = 0) in vec2 vPos;
 
@@ -1767,8 +3379,8 @@ void main(void)
 ////////////////////////////////////////////////////////////////////////////////
 #line 17    //#version dynamically inserted
 
-LAYUOT_BINDING(0) uniform sampler2D sourceRendered;
-LAYUOT_BINDING(1) uniform sampler2D accumMotion;
+LAYOUT_BINDING(0) uniform sampler2D sourceRendered;
+LAYOUT_BINDING(1) uniform sampler2D accumMotion;
 
 uniform float blurIntensity;
 
@@ -1790,23 +3402,19 @@ void main ()
 
 
 
-}////////////////////////////////////////////////////////////////////////////////
-//
+}//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 14    //#version dynamically inserted
 
 out vec4 color;
 uniform vec3 zoomF;
@@ -1852,28 +3460,25 @@ void main()
 
     color = vsColor * ambientInt + vsColor * diffuse + vec4(specular * specularInt) /*- distAtten*/;
 
-} ////////////////////////////////////////////////////////////////////////////////
-//
+} //------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 14    //#version dynamically inserted
+
 
 layout (location = 1) in vec3 vPos;
 layout (location = 2) in vec3 normal;
 
-// I cant use direct location... for EMS and webgl
+// cant use direct location... for EMS and webgl
 //layout (location = 4) uniform mat4 pMat;
 //layout (location = 5) uniform mat4 mvMat;
 //layout (location = 6) uniform mat4 zoomF;
@@ -1889,7 +3494,7 @@ out gl_PerVertex
 };
 #endif
 
-// I cant use blocks... for EMS and webgl
+// cant use blocks... for EMS and webgl
 
 #ifdef GL_ES
 out vec4 vsColor;
@@ -1908,7 +3513,6 @@ out vsOut {
 const vec4 blue  = vec4(0.10, 0.10, 0.70, 1.0);
 const vec4 green = vec4(0.10, 0.70, 0.10, 1.0);
 const vec4 red   = vec4(0.70, 0.10, 0.10, 1.0);
-
 
 //fast 90' rotation around fixzed axis
 vec3 rotOnX(vec3 v) { return vec3(v.x, v.z, -v.y); }
@@ -1929,24 +3533,21 @@ void main(void)
     vsNormal = normalize(mat3(mvMat) * newNorm);
     
     gl_Position = position;
-    //gl_Position = 
-}////////////////////////////////////////////////////////////////////////////////
-//
+}//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 14    //#version dynamically inserted
+
+LAYOUT_BINDING(1) uniform sampler2D tex;
 
 #define pixelColorOFFSET 0
 #define idxBLENDING (pixelColorOFFSET    )
@@ -1954,9 +3555,9 @@ void main(void)
 #define idxSOLID_AO (pixelColorOFFSET + 2)
 #define idxSOLID_DR (pixelColorOFFSET + 3)
 
-#if !defined(GL_ES) && !defined(__APPLE__)
+#if !defined(GL_ES)
     subroutine vec4 _pixelColor(vec4 color, vec4 N);
-    subroutine uniform _pixelColor pixelColor;
+    LAYOUT_LOCATION(1) subroutine uniform _pixelColor pixelColor;
 #endif
 
 in vec4 mvVtxPos;
@@ -1965,7 +3566,7 @@ in float pointDistance;
 in vec4 particleColor;
 in float particleSize;
 
-in vec4 shadowlightView;
+//in vec4 shadowlightView;
 
 layout (location = 0) out vec4 outColor;
 
@@ -1990,8 +3591,6 @@ float getAlpha(float alpha)
 
 vec4 acquireColor(vec2 coord)
 {
-    if(pointDistance<u.clippingDist) discard;    
-
     vec4 color = particleColor * texture(tex, coord).r;
 
     return vec4(color.rgb * u.colIntensity, getAlpha(color.a)) ;
@@ -2015,148 +3614,125 @@ vec3 packing2Colors8bit(vec3 colorA, vec3 colorB)
 }
 #endif
 
-#if !defined(__APPLE__)
-LAYUOT_INDEX(idxSOLID) SUBROUTINE(_pixelColor) 
-#endif
+LAYOUT_INDEX(idxSOLID) SUBROUTINE(_pixelColor) 
 vec4 pixelColorDirect(vec4 color, vec4 N)
 {
-    //if (color.a < u.alphaSkip) discard;   // kill pixels outside circle: r=1.0
-    //else {
-        //vec3 N;
-        //N.xy = (coord - vec2(.5))*2.0; // xy = radius in 0
-        //float mag = dot(N.xy, N.xy);
-        //N.z = sqrt(1.0-mag);
-    
-        //N.xyz = normalize(N.xyz); 
 
-        //Light @ vertex position
-        vec3 light =  normalize(u.lightDir);  // +vtx
+    //Light @ vertex position
+    vec3 light =  normalize(u.lightDir);  // +vtx
     
-        float lambertian = max(0.0, dot(light, N.xyz)); 
+    float lambertian = max(0.0, dot(light, N.xyz)); 
 
-        vec3 V = normalize(newVertex.xyz);
-#if defined(GL_ES) || defined(__APPLE__)
-        float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
+    vec3 V = normalize(newVertex.xyz);
+#if defined(GL_ES) || !defined(GLCHAOSP_USES_LIGHTMODELS_SUBS)
+    float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
 #else
-        float specular = lightModel(V, light, N.xyz);
+    float specular = lightModel(V, light, N.xyz);
 #endif
 
-        vec3 lightColor = color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
-                        u.lightColor * specular * u.lightSpecInt;
+    vec3 lightColor = color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
+                    u.lightColor * specular * u.lightSpecInt;
 
-        vec3 ambColor = (color.rgb*u.lightAmbInt + vec3(u.lightAmbInt)) * .5;
+    vec3 ambColor = (color.rgb*u.lightAmbInt + vec3(u.lightAmbInt)) * .5;
 
-        return vec4(smoothstep(u.sstepColorMin, u.sstepColorMax, lightColor + ambColor) , color.a);
+    return vec4(smoothstep(u.sstepColorMin, u.sstepColorMax, lightColor + ambColor) , color.a);
 }
 
-#if !defined(__APPLE__)
-LAYUOT_INDEX(idxSOLID_AO) SUBROUTINE(_pixelColor) 
-#endif
+LAYOUT_INDEX(idxSOLID_AO) SUBROUTINE(_pixelColor) 
 vec4 pixelColorAO(vec4 color, vec4 N)
 {
-        vec3 light =  normalize(u.lightDir);  // +vtx
+    vec3 light =  normalize(u.lightDir);  // +vtx
     
-        float lambertian = max(0.0, dot(light, N.xyz)); 
+    float lambertian = max(0.0, dot(light, N.xyz)); 
 
-        vec3 V = normalize(newVertex.xyz);
-#if defined(GL_ES) || defined(__APPLE__)
-        float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
+    vec3 V = normalize(newVertex.xyz);
+#if defined(GL_ES) || !defined(GLCHAOSP_USES_LIGHTMODELS_SUBS)
+    float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
 #else
-        float specular = lightModel(V, light, N.xyz);
+    float specular = lightModel(V, light, N.xyz);
 #endif
 
-        vec3 lColor =  color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
-                       u.lightColor * specular * u.lightSpecInt;
+    vec3 lColor =  color.rgb * u.lightColor * lambertian * u.lightDiffInt +  //diffuse component
+                    u.lightColor * specular * u.lightSpecInt;
 
-        return vec4(packing2Colors16bit(lColor, color.rgb), getDepth(newVertex.z));
+    return vec4(packing2Colors16bit(lColor, color.rgb), getFragDepth(newVertex.z));
 }
 
-#if !defined(__APPLE__)
-LAYUOT_INDEX(idxSOLID_DR) SUBROUTINE(_pixelColor)
-#endif
+LAYOUT_INDEX(idxSOLID_DR) SUBROUTINE(_pixelColor)
 vec4 pixelColorDR(vec4 color, vec4 N)
 {
-   return vec4(color.xyz, getDepth(newVertex.z));
+   return vec4(color.xyz, getFragDepth(newVertex.z));
 }
 
 
-#if !defined(__APPLE__)
-LAYUOT_INDEX(idxBLENDING) SUBROUTINE(_pixelColor)  
-#endif
+LAYOUT_INDEX(idxBLENDING) SUBROUTINE(_pixelColor)  
 vec4 pixelColorBlending(vec4 color, vec4 N)
 {
-    if(color.a < u.alphaSkip ) { discard; return color; }
-    else return color;
+    if(color.a < u.alphaSkip ) { discard; return vec4(0.0); }  //returm need for Angle error
+    return color;
 }
 
 vec4 mainFunc(vec2 ptCoord)
 {
 
     vec4 N = getParticleNormal(ptCoord);
-    if(N.w >= 1.0 || N.z < u.alphaSkip) { discard; return vec4(0.0); } //return black color and max depth
+        //if(pointDistance<u.clippingDist) discard;
 
-    newVertex    = mvVtxPos + vec4(0., 0., N.z * particleSize, 0.);
+    newVertex = mvVtxPos + vec4(0., 0., N.z * particleSize, 0.);
 
-//linear
-    gl_FragDepth = getDepth(newVertex.z);
-    //gl_FragDepth = depthSample(newVertex.z); // same but with zNear & zFar
-//logarithmic
-    //vec4 pPos = m.pMatrix * newVertex;
-    //gl_FragDepth = getDepth_(pPos.w);
-//Outerra
-    //vec4 pPos = m.pMatrix * newVertex;
-    //gl_FragDepth =  getDepth_(pPos.w+1.);
+    if(N.w >= 1.0 || N.z < u.alphaSkip || -newVertex.z<u.clippingDist || clippedPoint(newVertex)) { discard;   } //returm need for Angle error
+
+    gl_FragDepth = getFragDepth(newVertex.z);
 
     vec4 color = acquireColor(ptCoord);
 
-#if defined(GL_ES) || defined(__APPLE__)
+    vec4 bound = colorBoundary(newVertex, 0) + colorBoundary(newVertex, 1) + colorBoundary(newVertex, 2);
+    color.xyz = mix(color.xyz, bound.xyz, bound.a);
+
+#if defined(GL_ES)
     #if defined(GL_ES) && !defined(GLCHAOSP_LIGHTVER_EXPERIMENTAL)
         return u.lightActive==uint(1) ? pixelColorDirect(color, N) : pixelColorBlending(color, N);
     #else        
         switch(u.renderType) {
             default:
-            case uint(0) : return pixelColorBlending(color, N);
-            case uint(1) : return pixelColorDirect(color, N);
-            case uint(2) : return pixelColorAO(color, N);
-            case uint(3) : return pixelColorDR(color, N);             
+            case uint(idxBLENDING) : return pixelColorBlending(color, N);
+            case uint(idxSOLID   ) : return pixelColorDirect(color, N);
+            case uint(idxSOLID_AO) : return pixelColorAO(color, N);
+            case uint(idxSOLID_DR) : return pixelColorDR(color, N);             
         }
         //return (u.pass >= uint(2)) ? vec4(color.xyz, getDepth(newVertex.z)) : (u.pass==uint(0) ? retColor : vec4(retColor.xyz, getDepth(newVertex.z))); 
     #endif
-#else                          
+#else   
         return pixelColor(color, N); 
 #endif
-}////////////////////////////////////////////////////////////////////////////////
-//
+}//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 12    //#version dynamically inserted
 
 layout(std140) uniform;
 
 layout (location = 0) in vec4 a_ActualPoint;
 
-LAYUOT_BINDING(0) uniform sampler2D paletteTex;
+LAYOUT_BINDING(0) uniform sampler2D paletteTex;
 
-LAYUOT_BINDING(2) uniform _particlesData {
+LAYOUT_BINDING(2) uniform _particlesData {
     vec3  lightDir;          // align 0
     float lightDiffInt;
     vec3  lightColor;        // align 16
     float lightSpecInt;
-    vec4  POV;
     vec2  scrnRes;
     vec2  invScrnRes;
+    vec3  rotCenter;
     float lightAmbInt ;
     float lightShinExp;
     float sstepColorMin;
@@ -2181,6 +3757,7 @@ LAYUOT_BINDING(2) uniform _particlesData {
     float shadowGranularity;
     float shadowBias;
     float shadowDarkness;
+    float shadowDetail;
     float aoRadius;
     float aoBias;
     float aoDarkness;
@@ -2195,7 +3772,20 @@ LAYUOT_BINDING(2) uniform _particlesData {
     uint  renderType;
 } u;
 
-LAYUOT_BINDING(4) uniform _tMat {
+LAYOUT_BINDING(9) uniform _clippingPlanes {
+    vec4  clipPlane[3];
+    vec4  boundaryColor[3];
+    uvec4 planeActive;
+    uvec4 colorActive;
+    float thickness;
+    bool  additiveSpace;
+    bool  atLeastOneActive;
+} pl;
+
+LAYOUT_BINDING(4) uniform _tMat {
+    mat4 mMatrix;
+    mat4 vMatrix;
+    mat4 invMV  ;
     mat4 pMatrix;
     mat4 mvMatrix;
     mat4 mvpMatrix;
@@ -2207,6 +3797,7 @@ out gl_PerVertex
 {
     vec4 gl_Position;
     float gl_PointSize;
+    //float gl_ClipDistance[1];
 };
 #endif
 
@@ -2218,7 +3809,7 @@ out gl_PerVertex
 
 // Load OBJ
 #ifndef GL_ES
-LAYUOT_INDEX(1) SUBROUTINE(_colorResult) vec4 objColor()
+LAYOUT_INDEX(1) SUBROUTINE(_colorResult) vec4 objColor()
 {
     uint packCol = floatBitsToUint(a_ActualPoint.w);
     vec4 col = unpackUnorm4x8(packCol);
@@ -2227,84 +3818,63 @@ LAYUOT_INDEX(1) SUBROUTINE(_colorResult) vec4 objColor()
 }
 #endif
 
-LAYUOT_INDEX(0) SUBROUTINE(_colorResult) vec4 velColor()
+LAYOUT_INDEX(0) SUBROUTINE(_colorResult) vec4 velColor()
 {
     float vel = a_ActualPoint.w*u.velIntensity;
     return vec4(texture(paletteTex, vec2(vel,0.f)).rgb,1.0);
 }
-////////////////////////////////////////////////////////////////////////////////
-//
+//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 14    //#version dynamically inserted
 
 void main()
 {
 
     vec2 ptCoord = vec2(gl_PointCoord.x,1.0-gl_PointCoord.y); //upsideDown: revert point default
     outColor = mainFunc(ptCoord);
-/*
-void mainImage( out vec4 fragColor, in vec2 fragCoord )
-{
-    vec2 uv = fragCoord.xy / iResolution.xy;
-    vec4 color =  texture(iChannel0, uv);
-    float gray = length(color.rgb);
-    vec3 dx = dFdx(vec3(uv,gray));
-    vec3 dy = dFdy(vec3(uv,gray));
-    vec3 N = normalize(cross(dx, dy));
-    fragColor = vec4(N,1.0);
-}*/
+
 }
-////////////////////////////////////////////////////////////////////////////////
-//
+//------------------------------------------------------------------------------
 //  Copyright (c) 2018-2019 Michele Morrone
 //  All rights reserved.
 //
-//  mailto:me@michelemorrone.eu
-//  mailto:brutpitt@gmail.com
+//  https://michelemorrone.eu - https://BrutPitt.com
+//
+//  twitter: https://twitter.com/BrutPitt - github: https://github.com/BrutPitt
+//
+//  mailto:brutpitt@gmail.com - mailto:me@michelemorrone.eu
 //  
-//  https://github.com/BrutPitt
-//
-//  https://michelemorrone.eu
-//  https://BrutPitt.com
-//
 //  This software is distributed under the terms of the BSD 2-Clause license
-//  
-////////////////////////////////////////////////////////////////////////////////
-#line 17    //#version dynamically inserted
+//------------------------------------------------------------------------------
+#line 12    //#version dynamically inserted
 
 out vec4 mvVtxPos;
-//out vec4 mvVtxLightPos;
-
+#ifdef SHADOW_PASS
+out vec4 solidVtx;
+#endif
 out float pointDistance;
 out vec4 particleColor;
 out float particleSize;
 
-out vec4 shadowlightView;
 
 void main()
 {
 
-
 #ifdef SHADOW_PASS
     vec4 vtxPos =  m.mvLightM  * vec4(a_ActualPoint.xyz,1.f);
-    //gl_Position = m.pLightM * vtxPos;
-    //gl_PointSize = 1.0;
+    solidVtx = m.mvMatrix * vec4(a_ActualPoint.xyz,1.f);
 #else
     vec4 vtxPos = m.mvMatrix * vec4(a_ActualPoint.xyz,1.f);
-    vec4 shadowlightView = m.mvLightM * vec4(a_ActualPoint.xyz,1.f);
 #endif
 
     #if defined(GL_ES) || defined(TEST_WGL)
@@ -2320,6 +3890,7 @@ void main()
 
     float ptAtten = exp(-0.01*sign(pointDistance)*pow(abs(pointDistance)+1.f, u.pointDistAtten*.1));
     float size = u.pointSize * ptAtten * u.ySizeRatio;
+
     particleSize = size*u.invScrnRes.y;
 
     vec4 pt  = m.pMatrix * vec4(vtxPos.xy + vec2(size) * u.ptSizeRatio , vtxPos.zw);
@@ -2327,10 +3898,12 @@ void main()
     // NVidia & Intel do not supports gl_PointSize<1.0 -> point disappear
     // AMD driver (some times) supports gl_PointSize from 0.1
     // Look in Info dialog: point Range and Granularity
+    
+#ifdef SHADOW_PASS
+    gl_PointSize = max(distance(gl_Position.xyz, pt.xyz)/max(abs(gl_Position.w),.0001), u.pointspriteMinSize) * u.shadowDetail;
+#else
     gl_PointSize = max(distance(gl_Position.xyz, pt.xyz)/max(abs(gl_Position.w),.0001), u.pointspriteMinSize);
-
-//    float fc = .5 * log2(u.zFar+1);
-//    gl_Position.z = gl_Position.w * (log2( max(.000001, 1.+gl_Position.w) ) * fc - 1.);
+#endif
 }
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -2350,15 +3923,34 @@ void main()
 ////////////////////////////////////////////////////////////////////////////////
 #line 17    //#version dynamically inserted
 
+vec2 poissonDisk[16] = vec2[]( 
+   vec2( -0.94201624, -0.39906216 ), 
+   vec2( 0.94558609, -0.76890725 ), 
+   vec2( -0.094184101, -0.92938870 ), 
+   vec2( 0.34495938, 0.29387760 ), 
+   vec2( -0.91588581, 0.45771432 ), 
+   vec2( -0.81544232, -0.87912464 ), 
+   vec2( -0.38277543, 0.27676845 ), 
+   vec2( 0.97484398, 0.75648379 ), 
+   vec2( 0.44323325, -0.97511554 ), 
+   vec2( 0.53742981, -0.47373420 ), 
+   vec2( -0.26496911, -0.41893023 ), 
+   vec2( 0.79197514, 0.19090188 ), 
+   vec2( -0.24188840, 0.99706507 ), 
+   vec2( -0.81409955, 0.91437590 ), 
+   vec2( 0.19984126, 0.78641367 ), 
+   vec2( 0.14383161, -0.14100790 ) 
+);
 
 in vec2 viewRay;
+in vec2 viewRayLight;
 in vec2 vTexCoord;
 
 out vec4 outColor;
 
-LAYUOT_BINDING(5) uniform sampler2D prevData;
-LAYUOT_BINDING(6) uniform sampler2D aoTex;
-LAYUOT_BINDING(7) uniform sampler2D shadowTex;
+LAYOUT_BINDING(5) uniform sampler2D prevData;
+LAYOUT_BINDING(6) uniform sampler2D aoTex;
+LAYOUT_BINDING(7) uniform sampler2D shadowTex;
 
 
 float f(vec2 uv) {
@@ -2480,7 +4072,7 @@ vec4 pixelColorLight(vec3 vtx, vec4 color, vec4 N, float AO, float shadow)
         float lambertian = max(0.0, dot(light, N.xyz)); 
 
         vec3 V = normalize(vtx);
-#if defined(GL_ES) || defined(__APPLE__)
+#if defined(GL_ES) || !defined(GLCHAOSP_USES_LIGHTMODELS_SUBS)
         float specular = u.lightModel == uint(idxPHONG) ? specularPhong(V, light, N.xyz) : (u.lightModel == uint(idxBLINPHONG) ? specularBlinnPhong(V, light, N.xyz) : specularGGX(V, light, N.xyz));
 #else
         float specular = lightModel(V, light, N.xyz);
@@ -2515,36 +4107,100 @@ float getShadow(vec2 uv)
 float buildShadow(vec4 frag)
 {
     
-    vec4 pt = vec4(viewRay*-frag.z-u.POV.xy, frag.z-u.POV.z, 1.0);
+    vec4 pt = vec4(viewRay*-frag.z, frag.z, 1.0);
            
     vec4 fragPosLightSpace = m.pMatrix * m.mvLightM  * pt;
-    //fragPosLightSpace = m.pMatrix * m.mvLightM * (vec4(viewLight*frag.z, frag.z, 1.0));
-    // perform perspective divide
+    // perspective divide
     vec3 projCoords = (fragPosLightSpace.xyz)/(fragPosLightSpace.w);
-    // transform to [0,1] range
+    // to [0,1] range
     projCoords = projCoords * 0.5 + .5;
-    // get closest depth value from light's perspective (using [0,1] range fragPosLight as coords)
-    //float closestDepth = (SampleTextureCatmullRom(projCoords.xy).x);
-    float closestDepth = getViewZ(texture(shadowTex, projCoords.xy).r); 
-    // get depth of current fragment from light's perspective
-    float currentDepth = getViewZ(projCoords.z) + u.shadowBias;
+    // get closest depth ==> from light's perspective
+    float closestDepth = restoreZ(texture(shadowTex, projCoords.xy).r); 
+    // get depth ==> light's perspective
+    float currentDepth = restoreZ(projCoords.z) + u.shadowBias;
     // check whether current frag pos is in shadow
-    float shadow = currentDepth < closestDepth  ? 0.0 : 1.0;
+    float shadow = (currentDepth+u.shadowBias) < closestDepth  ? 0.0 : 1.0;
 
     return shadow;
 }  
 
+float random(vec3 seed, int i){
+    vec4 seed4 = vec4(seed,i);
+    float dot_product = dot(seed4, vec4(12.9898,78.233,45.164,94.673));
+    return fract(sin(dot_product) * 43758.5453);
+}
+
+float buildScatterShadow(vec4 frag)
+{
+    float shadow = 0.0;
+    for(int i=0; i<8; i++) {
+        int idx = int(16.0*random(gl_FragCoord.xyy, i));
+        vec4 pt = vec4((viewRay*-frag.z)+poissonDisk[idx]/1000.0, frag.z, 1.0);
+           
+        vec4 fragPosLightSpace = m.pMatrix * m.mvLightM  * pt;
+        //fragPosLightSpace = m.pMatrix * m.mvLightM * (vec4(viewLight*frag.z, frag.z, 1.0));
+        // perform perspective divide
+        vec3 projCoords = (fragPosLightSpace.xyz)/(fragPosLightSpace.w);
+        // transform to [0,1] range
+        projCoords = projCoords * 0.5 + .5;
+        // get closest depth value from light's perspective (using [0,1] range fragPosLight as coords)
+        //float closestDepth = (SampleTextureCatmullRom(projCoords.xy).x);
+        float closestDepth = restoreZ(texture(shadowTex, projCoords.xy+poissonDisk[idx]/1000.0).r); 
+        // get depth of current fragment from light's perspective
+        float currentDepth = restoreZ(projCoords.z) + u.shadowBias;
+        // check whether current frag pos is in shadow
+        shadow += currentDepth < closestDepth  ? 0.0 : 1.0/8.0;
+    }
+
+    return shadow;
+}  
+
+float buildSmoothScattereShadow(vec4 frag)
+{
+    vec4 pt = vec4(viewRay*-frag.z, frag.z, 1.0);
+
+    mat4 tMat = m.pMatrix * m.mvLightM;
+           
+    vec4 fragPosLightSpace = tMat * pt;
+    // perform perspective divide and port to [0,1] range
+    vec3 projCoords = 0.5 * (fragPosLightSpace.xyz)/fragPosLightSpace.w + .5;
+
+    if(projCoords.z>1.0) return 0.0;
+    // get depth of current fragment from light's perspective    
+
+    float currentDepth = restoreZ(projCoords.z) + u.shadowBias;
+
+    vec2 stepTex = u.shadowGranularity*u.invScrnRes;
+
+    float shadow = 0.0;
+    int radius = int(u.shadowSmoothRadius);
+    int diam = radius * 2 + 1;
+    float invDiv = 1.0/float(diam * diam);
+    
+    for (int x = -radius; x <= radius ; x++) 
+        for (int y = -radius; y <= radius; y++) {
+            float closestDepth = restoreZ(texture(shadowTex, projCoords.xy+vec2(x,y)*stepTex).r);
+
+            shadow += currentDepth < closestDepth  ?  u.shadowDarkness*u.shadowDarkness*invDiv : invDiv ;    // 1.0/9.0
+
+            vec4 pt = vec4((viewRay+vec2(x,y)*stepTex)*-frag.z-(vec2(x,y)*stepTex), frag.z, 1.0);
+           
+            vec4 fragPosLightSpace = tMat * pt;
+            vec3 projCoords = .5 * (fragPosLightSpace.xyz)/fragPosLightSpace.w + .5;
+
+            closestDepth = restoreZ(texture(shadowTex, projCoords.xy+poissonDisk[(x*diam+y)%16]/1000.0).r);
+            float currentDepth = restoreZ(projCoords.z) + u.shadowBias;
+
+            shadow += currentDepth < closestDepth  ?  u.shadowDarkness*u.shadowDarkness*invDiv : invDiv ;    // 1.0/9.0
+        }
+
+    return shadow * .5;
+}
+
 
 float buildSmoothShadow(vec4 frag)
 {
-/*
-    mat4 m1 = mat4(1.0);
-    m1[0].w = -u.POV.x ;
-    m1[1].w = -u.POV.y ;
-    m1[2].w = -u.POV.z ;
-    vec4 pt =  vec4(viewRay*-frag.z, frag.z, 1.0) * m1; 
-*/
-    vec4 pt = vec4(viewRay*-frag.z-u.POV.xy, frag.z-u.POV.z, 1.0);
+    vec4 pt = vec4(viewRay*-frag.z, frag.z, 1.0);
 
     mat4 tMat = m.pMatrix * m.mvLightM;
            
@@ -2556,12 +4212,8 @@ float buildSmoothShadow(vec4 frag)
     // get depth of current fragment from light's perspective    
 
 
-    float bias = u.shadowBias;
-#ifdef __APPLE__
-    bias+=1.0;
-#endif
-
-    float currentDepth = getViewZ(projCoords.z) + bias;
+    //float bias = 0.005 *  tan(acos(clamp(dot(normalize(u.lightDir),frag.xyz), 0., .9999)));
+    float currentDepth = restoreZ(projCoords.z) + u.shadowBias;
 
     vec2 stepTex = u.shadowGranularity*u.invScrnRes;
 
@@ -2572,29 +4224,23 @@ float buildSmoothShadow(vec4 frag)
     
     for (int x = -radius; x <= radius ; x++) 
         for (int y = -radius; y <= radius; y++) {
-            //vec4 pt = vec4((viewRay+vec2(x,y)*stepTex)*-frag.z-(u.POV.xy+vec2(x,y)*stepTex), frag.z-u.POV.z, 1.0);
-           
-            //vec4 fragPosLightSpace = tMat * pt;
-            //vec3 projCoords = .5 * (fragPosLightSpace.xyz)/fragPosLightSpace.w + .5;
-            //float closestDepth = getViewZ(texture(shadowTex, projCoords.xy).r);
-            //float currentDepth = getViewZ(projCoords.z) + u.shadowBias;
+            float closestDepth = restoreZ(texture(shadowTex, projCoords.xy+vec2(x,y)*stepTex).r);
 
-            float closestDepth = getViewZ(texture(shadowTex, projCoords.xy+vec2(x,y)*stepTex).r);
-
-            shadow += currentDepth < closestDepth  ?  u.shadowDarkness*u.shadowDarkness*invDiv : invDiv ;    // 1.0/9.0
-
-            vec4 pt = vec4((viewRay+vec2(x,y)*stepTex)*-frag.z-(u.POV.xy+vec2(x,y)*stepTex), frag.z-u.POV.z, 1.0);
+            shadow += (currentDepth < closestDepth  ?  u.shadowDarkness*u.shadowDarkness*invDiv : invDiv) ;    // 1.0/9.0
+/*
+            vec4 pt = vec4((viewRay+vec2(x,y)*stepTex)*-frag.z-(vec2(x,y)*stepTex), frag.z, 1.0);
            
             vec4 fragPosLightSpace = tMat * pt;
             vec3 projCoords = .5 * (fragPosLightSpace.xyz)/fragPosLightSpace.w + .5;
 
-            closestDepth = getViewZ(texture(shadowTex, projCoords.xy).r);
-            float currentDepth = getViewZ(projCoords.z) + bias;
+            closestDepth = restoreZ(texture(shadowTex, projCoords.xy).r);
+            float currentDepth = restoreZ(projCoords.z) + u.shadowBias;
 
-            shadow += currentDepth < closestDepth  ?  u.shadowDarkness*u.shadowDarkness*invDiv : invDiv ;    // 1.0/9.0
+            shadow += (currentDepth < closestDepth  ?  u.shadowDarkness*u.shadowDarkness*invDiv : invDiv) * .1 ;    // 1.0/9.0
+*/
         }
 
-    return shadow * .5;
+    return shadow;
 }
 
 
@@ -2655,7 +4301,7 @@ void main()
     float depth = texture(prevData,uv).w;
     if(depth<=.01) { discard; outColor = vec4(0.0); return; }
 
-    float z = getViewZ(depth);
+    float z = restoreZ(depth);
     vec4 vtx = vec4(viewRay *z, z, 1.0);
 
     //float AO = bicubic(uv, 3); //texelFetch(aoTex,ivec2(uv), 0).w;
@@ -2722,14 +4368,14 @@ layout(std140) uniform;
 
 layout (location = 0) in vec2 vPos;
 
-LAYUOT_BINDING(2) uniform _particlesData {
+LAYOUT_BINDING(2) uniform _particlesData {
     vec3  lightDir;          // align 0
     float lightDiffInt;
     vec3  lightColor;        // align 16
     float lightSpecInt;
-    vec4  POV;
     vec2  scrnRes;
     vec2  invScrnRes;
+    vec3  rotCenter;
     float lightAmbInt ;
     float lightShinExp;
     float sstepColorMin;
@@ -2754,6 +4400,7 @@ LAYUOT_BINDING(2) uniform _particlesData {
     float shadowGranularity;
     float shadowBias;
     float shadowDarkness;
+    float shadowDetail;
     float aoRadius;
     float aoBias;
     float aoDarkness;
@@ -2768,7 +4415,18 @@ LAYUOT_BINDING(2) uniform _particlesData {
     uint  renderType;
 } u;
 
+LAYOUT_BINDING(9) uniform _clippingPlanes {
+    vec4  clipPlane[3];
+    vec4  boundaryColor[3];
+    uvec4 planeActive;       //AMD => bvec* != uvec* .... NVidia => bvec* == uvec*
+    uvec4 colorActive;
+    float thickness;
+    bool  additiveSpace;
+    bool  atLeastOneActive;
+} pl;
+
 out vec2 viewRay;
+out vec2 viewRayLight;
 
 #ifdef GL_ES
 #else
@@ -2786,7 +4444,7 @@ void main(void)
     vTexCoord = texCoord[gl_VertexID];
     gl_Position = vec4(vPos.xy,.0f,1.f);
     viewRay = vPos.xy * vec2(u.scrnRes.x*u.invScrnRes.y * u.halfTanFOV, u.halfTanFOV);
-
+    viewRayLight = vPos.xy * vec2(u.scrnRes.x*u.invScrnRes.y * tan(radians(45.0)*.5), tan(radians(45.0)*.5));
 }////////////////////////////////////////////////////////////////////////////////
 //
 //  Copyright (c) 2018-2019 Michele Morrone
@@ -2829,7 +4487,7 @@ layout(std140) uniform;
 #endif
 
 
-LAYUOT_BINDING(2) uniform _blurData {
+LAYOUT_BINDING(2) uniform _blurData {
     vec4 sigma;
     float threshold;
     bool toneMap;
@@ -2844,12 +4502,12 @@ LAYUOT_BINDING(2) uniform _blurData {
     int blurCallType;
 };
 
-LAYUOT_BINDING(0) uniform sampler2D origTexture;
-LAYUOT_BINDING(1) uniform sampler2D pass1Texture;
+LAYOUT_BINDING(0) uniform sampler2D origTexture;
+LAYOUT_BINDING(1) uniform sampler2D pass1Texture;
 
-//LAYUOT_BINDING(3) uniform sampler2D depthTexture;
-//LAYUOT_BINDING(4) uniform sampler2D vtxTex;
-//LAYUOT_BINDING(5) uniform sampler2D normTex;
+//LAYOUT_BINDING(3) uniform sampler2D depthTexture;
+//LAYOUT_BINDING(4) uniform sampler2D vtxTex;
+//LAYOUT_BINDING(5) uniform sampler2D normTex;
 
 
 //in vec2 vTexCoord;
@@ -3071,14 +4729,14 @@ vec4 qualitySetting(vec4 col)
 
 //  Pass1 Gauss Blur
 ////////////////////////////////////////////////////////////////////////////
-LAYUOT_INDEX(1) SUBROUTINE(_radialPass) vec4 radialPass1()
+LAYOUT_INDEX(1) SUBROUTINE(_radialPass) vec4 radialPass1()
 {
     return gPass(origTexture, vec2(1.0, 0.0));
 }
 
 //  Pass2 Gauss Blur
 ////////////////////////////////////////////////////////////////////////////
-LAYUOT_INDEX(2) SUBROUTINE(_radialPass) vec4 radialPass2()
+LAYOUT_INDEX(2) SUBROUTINE(_radialPass) vec4 radialPass2()
 {
     vec4 original = texelFetch(origTexture,ivec2(gl_FragCoord.xy),0) * texControls.y; //origTex * intensity
     vec4 blurred = gPass(pass1Texture, vec2(0.0, 1.0))* texControls.x;                //blur * intensity
@@ -3091,7 +4749,7 @@ LAYUOT_INDEX(2) SUBROUTINE(_radialPass) vec4 radialPass2()
 
 //  Pass2 Gauss Blur + threshold -> reduced (1/4) bilateral
 ////////////////////////////////////////////////////////////////////////////
-LAYUOT_INDEX(3) SUBROUTINE(_radialPass) vec4 radialPass2withBilateral()
+LAYOUT_INDEX(3) SUBROUTINE(_radialPass) vec4 radialPass2withBilateral()
 {
     vec4 original = texelFetch(origTexture,ivec2(gl_FragCoord.xy),0) * texControls.y;
     vec4 blurred = gPass(pass1Texture, vec2(0.0, 1.0))* texControls.x;
@@ -3106,7 +4764,7 @@ LAYUOT_INDEX(3) SUBROUTINE(_radialPass) vec4 radialPass2withBilateral()
 
 //  Bilateral onePass
 ////////////////////////////////////////////////////////////////////////////
-LAYUOT_INDEX(4) SUBROUTINE(_radialPass) vec4 bilateralSmooth()
+LAYOUT_INDEX(4) SUBROUTINE(_radialPass) vec4 bilateralSmooth()
 {
     vec4 original = texelFetch(origTexture,ivec2(gl_FragCoord.xy),0) * texControls.y; //origTex intensity
     vec4 newBlur = bilateralSmartSmoothOK() * texControls.z;
@@ -3196,7 +4854,7 @@ vec2 scale (vec2 p, float s) {
 
 //  bypass, only image adjust
 ////////////////////////////////////////////////////////////////////////////
-LAYUOT_INDEX(0) SUBROUTINE(_radialPass) vec4 byPass()
+LAYOUT_INDEX(0) SUBROUTINE(_radialPass) vec4 byPass()
 {
     return qualitySetting(min(texelFetch(origTexture,ivec2(gl_FragCoord.xy),0) * texControls.y, 1.0f));
 }
@@ -3227,6 +4885,7 @@ void main ()
 #line 17    //#version dynamically inserted
 
 in vec4 mvVtxPos;
+in vec4 solidVtx;
 in float particleSize;
 
 #ifdef GL_ES
@@ -3238,16 +4897,10 @@ void main()
 
     vec2 ptCoord = vec2(gl_PointCoord.x,1.0-gl_PointCoord.y);
     vec4 N = getParticleNormal(ptCoord);
-    if(N.w > 1.0 || N.z < u.alphaSkip) { discard; return; } //return black color and max depth
 
-//linear
-    float z = mvVtxPos.z + N.z * particleSize;
-    //z = (z + u.zNear) / (u.zFar - u.zNear);
-    gl_FragDepth = getDepth(z);
+    if(N.w > 1.0 || N.z < u.alphaSkip || clippedPoint(solidVtx)) { discard; } //return black color and max depth
 
-    //vec4 pPos = m.pMatrix * mvVtxPos;
-    //gl_FragDepth =  getDepth_(pPos.w);
-
+    gl_FragDepth = getFragDepth(mvVtxPos.z + N.z * particleSize*u.shadowDetail);
 
 // for Chrome76 message: "exture is not renderable" if only zBuffer... need ColorBuffer 
 // FireFox68 Works fine also only with zBuffer w/o ColorBuffer
@@ -3255,6 +4908,1886 @@ void main()
     color = vec4(vec3(gl_FragDepth), 1.0);
 #endif
 } {
+	"Attractor":   {
+		"Name":     "MagneticRight",
+		"nMagnets": 32,
+		"kMax":     5.0,
+		"kMin":     -5.0,
+		"vMax":     1.0,
+		"vMin":     -1.0,
+		"vData":    [
+			0.48503071,
+			-0.16434219,
+			0.62425607,
+			0.1452986,
+			-0.1467635,
+			0.095370293,
+			-0.001556456,
+			0.71050137,
+			0.34812459,
+			0.54997408,
+			-0.399823,
+			0.01724291,
+			-0.88421279,
+			-0.1210669,
+			0.98278761,
+			0.5339824,
+			-0.61033958,
+			0.52012688,
+			-0.83562732,
+			0.62602621,
+			-0.80932027,
+			-0.53331089,
+			0.80779451,
+			0.28312019,
+			0.950621,
+			-0.2300791,
+			-0.66319782,
+			0.64116329,
+			-0.88274789,
+			-0.90142518,
+			0.642262,
+			0.6176641,
+			0.42008731,
+			0.1664785,
+			0.54319888,
+			-0.64000368,
+			0.7803278,
+			0.877926,
+			-0.64769429,
+			0.83288062,
+			-0.76549578,
+			0.9913938,
+			0.35679191,
+			0.2183599,
+			-0.97729421,
+			-0.61345261,
+			-0.91076392,
+			0.75542462,
+			0.896237,
+			-0.84484392,
+			0.58427691,
+			0.65300453,
+			0.63029867,
+			-0.1214331,
+			0.47917119,
+			-0.037934478,
+			0.40128791,
+			0.94445628,
+			0.1188695,
+			0.92974639,
+			0.6443373,
+			-0.71410263,
+			-0.90636921,
+			0.1907102,
+			-0.90484327,
+			-0.1100192,
+			0.1067232,
+			-0.8424024,
+			-0.88305312,
+			-0.7700125,
+			-0.46934411,
+			0.35178691,
+			0.2304453,
+			0.084383734,
+			0.31485951,
+			-0.30265209,
+			0.782464,
+			-0.2156743,
+			0.19235811,
+			0.91192353,
+			-0.1184424,
+			0.94811863,
+			-0.46494949,
+			0.80297261,
+			0.77465129,
+			-0.856685,
+			0.1725211,
+			-0.54594558,
+			0.91869873,
+			-0.62059391,
+			0.72435677,
+			0.403119,
+			0.79967648,
+			-0.88976723,
+			-0.0099185109,
+			0.93206578
+		],
+		"kData":    [
+			0.0058338991,
+			0.0253584,
+			0.01462666,
+			0.02646308,
+			0.01038993,
+			0.02675405,
+			0.020407541,
+			0.019616149,
+			0.01763512,
+			0.027104249,
+			0.01345676,
+			0.01689266,
+			0.01120706,
+			0.0046940329,
+			0.007236416,
+			0.01336062,
+			0.01125256,
+			0.020444451,
+			0.01157271,
+			0.01199158,
+			0.0041069328,
+			0.02272246,
+			0.02665277,
+			0.01643174,
+			0.023042619,
+			0.02674718,
+			0.019479681,
+			0.0203423,
+			0.0047626989,
+			0.0031327249,
+			0.021262441,
+			0.022392,
+			0.0284587,
+			0.027815809,
+			0.0032005331,
+			0.01317694,
+			0.01140105,
+			0.025288019,
+			0.00820719,
+			0.02326321,
+			0.02735059,
+			0.003216842,
+			0.016153639,
+			0.005050241,
+			0.01552534,
+			0.0091307564,
+			0.015965659,
+			0.02162379,
+			0.0060167238,
+			0.01849431,
+			0.01112552,
+			0.01126457,
+			0.0184368,
+			0.031037129,
+			0.02056461,
+			0.0086612487,
+			0.0238958,
+			0.01190231,
+			0.02844754,
+			0.0142035,
+			0.01225166,
+			0.024464879,
+			0.02494726,
+			0.030165071,
+			0.021600621,
+			0.02120064,
+			0.02713429,
+			0.0092740981,
+			0.020351751,
+			0.0151614,
+			0.027381491,
+			0.0270888,
+			0.029002029,
+			0.00837199,
+			0.01363529,
+			0.0184368,
+			0.02362285,
+			0.01748148,
+			0.0094569232,
+			0.027959149,
+			0.0094079981,
+			0.029624321,
+			0.01824368,
+			0.03043887,
+			0.027935119,
+			0.03001743,
+			0.01859903,
+			0.02638497,
+			0.022053819,
+			0.0096723652,
+			0.0085488064,
+			0.026984081,
+			0.01166112,
+			0.01628153,
+			0.024252011,
+			0.01310827
+		]
+	},
+	"Render":      {
+		"RenderMode":     1,
+		"motionBlur":     false,
+		"blurIntensity":  0.5,
+		"mixingVal":      0.0,
+		"circBuff":       10000000,
+		"rstrtCircBuff":  false,
+		"stopCircBuff":   false,
+		"camPOV":         [ 0.0, 0.0, 3.0 ],
+		"camTGT":         [ 0.0, 0.0, 0.0 ],
+		"camPerspective": [ 30.0, 1.1920929e-07, 100.0 ],
+		"camDolly":       [ 0.0, 0.0, 0.30999997 ],
+		"camPan":         [ 6.2000031, 0.1599997, 0.0 ],
+		"camRotCent":     [ 0.0, 0.0, 0.0 ],
+		"camRot":         [ 0.035551932, -0.054382306, -0.0076698875, -0.99821788 ]
+	},
+	"RenderMode0": {
+		"dstBlendAttrib":   32772,
+		"srcBlendAttrib":   770,
+		"DepthState":       true,
+		"BlendState":       false,
+		"LightState":       true,
+		"pointSize":        38.644,
+		"pointSizeFactor":  0.0,
+		"clippingDist":     0.01,
+		"alphaKFactor":     1.0,
+		"alphaAttenFactor": 0.0,
+		"alphaSkip":        0.0,
+		"dotsSize":         2,
+		"HermiteVals":      [ 0.7, 0.0, 0.3, 0.0 ],
+		"dotsType":         1,
+		"ColorInt":         1.0,
+		"ColorVel":         0.377,
+		"PalInvert":        true,
+		"PalClamp":         false,
+		"PalOffset":        0.0,
+		"PalRange":         1.0,
+		"PalH":             0.0,
+		"PalS":             0.32500002,
+		"PalL":             0.53,
+		"lightShinExp":     50.0,
+		"lightDiffInt":     3.0,
+		"lightSpecInt":     1.0,
+		"lightAmbInt":      0.1,
+		"lightStepMin":     0.1,
+		"lightStepMax":     1.1,
+		"lightDir":         [ -20.0, -9.0, 45.0 ],
+		"lightColor":       [ 1.0, 1.0, 1.0 ],
+		"glowOn":           false,
+		"glowSelect":       3,
+		"sigma":            7.0,
+		"sigmaRadX":        2.0,
+		"renderInt":        0.85,
+		"blurInt":          1.0,
+		"bilatInt":         0.332,
+		"bilatMix":         0.3,
+		"mixTexture":       1.0,
+		"glowThreshold":    0.197,
+		"fxaaOn":           false,
+		"fxaaThreshold":    0.5,
+		"ReductMul":        8.0,
+		"ReductMin":        128.0,
+		"Span":             8.0,
+		"Gamma":            2.3,
+		"Bright":           0.0,
+		"Contrast":         0.02,
+		"Exposure":         1.2,
+		"ToneMap":          false,
+		"ToneMapVal":       1.0,
+		"ToneMapExp":       1.0,
+		"Palette":          {
+			"Type":    "magma",
+			"Name":    "magma",
+			"rgbData": [
+				0.00146,
+				0.00047,
+				0.01387,
+				0.00226,
+				0.00129,
+				0.01833,
+				0.00328,
+				0.00231,
+				0.02371,
+				0.00451,
+				0.00349,
+				0.02997,
+				0.00595,
+				0.00484,
+				0.03713,
+				0.00759,
+				0.00636,
+				0.04497,
+				0.00943,
+				0.00802,
+				0.05284,
+				0.01146,
+				0.00983,
+				0.06075,
+				0.01371,
+				0.01177,
+				0.06867,
+				0.01616,
+				0.01384,
+				0.0766,
+				0.01881,
+				0.01603,
+				0.08458,
+				0.02169,
+				0.01832,
+				0.09261,
+				0.02479,
+				0.02072,
+				0.10068,
+				0.02812,
+				0.0232,
+				0.10879,
+				0.0317,
+				0.02576,
+				0.11697,
+				0.03552,
+				0.0284,
+				0.12521,
+				0.03961,
+				0.03109,
+				0.13352,
+				0.04383,
+				0.03383,
+				0.14189,
+				0.04806,
+				0.03661,
+				0.15033,
+				0.05232,
+				0.03941,
+				0.15884,
+				0.05661,
+				0.04216,
+				0.16745,
+				0.06095,
+				0.04479,
+				0.17613,
+				0.06533,
+				0.04732,
+				0.18489,
+				0.06976,
+				0.04973,
+				0.19374,
+				0.07426,
+				0.05202,
+				0.20266,
+				0.07881,
+				0.05418,
+				0.21167,
+				0.08345,
+				0.05623,
+				0.22075,
+				0.08816,
+				0.05813,
+				0.22992,
+				0.09295,
+				0.0599,
+				0.23916,
+				0.09783,
+				0.06153,
+				0.24848,
+				0.10282,
+				0.06301,
+				0.25785,
+				0.1079,
+				0.06434,
+				0.26729,
+				0.11309,
+				0.06549,
+				0.27678,
+				0.1184,
+				0.06648,
+				0.28632,
+				0.12383,
+				0.06729,
+				0.29588,
+				0.12938,
+				0.06793,
+				0.30544,
+				0.13505,
+				0.06839,
+				0.315,
+				0.14086,
+				0.06865,
+				0.32454,
+				0.14679,
+				0.06874,
+				0.33401,
+				0.15284,
+				0.06864,
+				0.3434,
+				0.15902,
+				0.06835,
+				0.35269,
+				0.16531,
+				0.06791,
+				0.36182,
+				0.17171,
+				0.0673,
+				0.37077,
+				0.17821,
+				0.06658,
+				0.3795,
+				0.1848,
+				0.06573,
+				0.38797,
+				0.19146,
+				0.06482,
+				0.39615,
+				0.19818,
+				0.06386,
+				0.40401,
+				0.20493,
+				0.06291,
+				0.41151,
+				0.21172,
+				0.06199,
+				0.41865,
+				0.21851,
+				0.06116,
+				0.42539,
+				0.2253,
+				0.06044,
+				0.43174,
+				0.23208,
+				0.05989,
+				0.43769,
+				0.23883,
+				0.05952,
+				0.44326,
+				0.24554,
+				0.05935,
+				0.44844,
+				0.25222,
+				0.05942,
+				0.45325,
+				0.25886,
+				0.05971,
+				0.45771,
+				0.26545,
+				0.06024,
+				0.46184,
+				0.27199,
+				0.06099,
+				0.46566,
+				0.27849,
+				0.06198,
+				0.46919,
+				0.28495,
+				0.06317,
+				0.47245,
+				0.29137,
+				0.06455,
+				0.47546,
+				0.29774,
+				0.06612,
+				0.47824,
+				0.30408,
+				0.06784,
+				0.48081,
+				0.31038,
+				0.0697,
+				0.48319,
+				0.31665,
+				0.07169,
+				0.48538,
+				0.3229,
+				0.07378,
+				0.48741,
+				0.32911,
+				0.07597,
+				0.48929,
+				0.33531,
+				0.07824,
+				0.49102,
+				0.34148,
+				0.08056,
+				0.49263,
+				0.34764,
+				0.08295,
+				0.49412,
+				0.35377,
+				0.08537,
+				0.4955,
+				0.3599,
+				0.08783,
+				0.49678,
+				0.36601,
+				0.09031,
+				0.49796,
+				0.37212,
+				0.09282,
+				0.49905,
+				0.37821,
+				0.09533,
+				0.50007,
+				0.3843,
+				0.09786,
+				0.501,
+				0.39038,
+				0.10038,
+				0.50186,
+				0.39647,
+				0.1029,
+				0.50266,
+				0.40255,
+				0.10542,
+				0.50339,
+				0.40863,
+				0.10793,
+				0.50405,
+				0.41471,
+				0.11043,
+				0.50466,
+				0.42079,
+				0.11292,
+				0.50521,
+				0.42688,
+				0.1154,
+				0.50571,
+				0.43297,
+				0.11785,
+				0.50616,
+				0.43906,
+				0.1203,
+				0.50656,
+				0.44516,
+				0.12272,
+				0.5069,
+				0.45127,
+				0.12513,
+				0.5072,
+				0.45739,
+				0.12752,
+				0.50745,
+				0.46351,
+				0.12989,
+				0.50765,
+				0.46964,
+				0.13225,
+				0.50781,
+				0.47578,
+				0.13458,
+				0.50792,
+				0.48193,
+				0.13689,
+				0.50799,
+				0.48809,
+				0.13919,
+				0.50801,
+				0.49426,
+				0.14146,
+				0.50799,
+				0.50044,
+				0.14372,
+				0.50792,
+				0.50663,
+				0.14596,
+				0.50781,
+				0.51283,
+				0.14818,
+				0.50765,
+				0.51904,
+				0.15038,
+				0.50744,
+				0.52527,
+				0.15257,
+				0.50719,
+				0.53151,
+				0.15474,
+				0.5069,
+				0.53776,
+				0.15689,
+				0.50655,
+				0.54401,
+				0.15903,
+				0.50616,
+				0.55029,
+				0.16116,
+				0.50572,
+				0.55657,
+				0.16327,
+				0.50523,
+				0.56287,
+				0.16537,
+				0.50469,
+				0.56917,
+				0.16745,
+				0.5041,
+				0.57549,
+				0.16953,
+				0.50347,
+				0.58182,
+				0.1716,
+				0.50278,
+				0.58816,
+				0.17365,
+				0.50204,
+				0.59451,
+				0.1757,
+				0.50124,
+				0.60087,
+				0.17774,
+				0.50039,
+				0.60724,
+				0.17978,
+				0.49949,
+				0.61362,
+				0.18181,
+				0.49854,
+				0.62001,
+				0.18384,
+				0.49752,
+				0.6264,
+				0.18587,
+				0.49646,
+				0.6328,
+				0.18789,
+				0.49533,
+				0.63922,
+				0.18992,
+				0.49415,
+				0.64563,
+				0.19195,
+				0.49291,
+				0.65206,
+				0.19399,
+				0.49161,
+				0.65848,
+				0.19603,
+				0.49025,
+				0.66492,
+				0.19807,
+				0.48884,
+				0.67135,
+				0.20013,
+				0.48736,
+				0.67779,
+				0.2022,
+				0.48582,
+				0.68422,
+				0.20429,
+				0.48422,
+				0.69066,
+				0.20638,
+				0.48256,
+				0.6971,
+				0.2085,
+				0.48083,
+				0.70353,
+				0.21064,
+				0.47905,
+				0.70996,
+				0.2128,
+				0.4772,
+				0.71639,
+				0.21498,
+				0.47529,
+				0.72281,
+				0.21719,
+				0.47332,
+				0.72922,
+				0.21944,
+				0.47128,
+				0.73562,
+				0.22171,
+				0.46918,
+				0.742,
+				0.22402,
+				0.46702,
+				0.74838,
+				0.22638,
+				0.46479,
+				0.75474,
+				0.22877,
+				0.46251,
+				0.76108,
+				0.23121,
+				0.46016,
+				0.7674,
+				0.2337,
+				0.45775,
+				0.77369,
+				0.23625,
+				0.45529,
+				0.77997,
+				0.23885,
+				0.45276,
+				0.78621,
+				0.24151,
+				0.45018,
+				0.79243,
+				0.24424,
+				0.44754,
+				0.79861,
+				0.24704,
+				0.44485,
+				0.80475,
+				0.24991,
+				0.4421,
+				0.81085,
+				0.25286,
+				0.43931,
+				0.81691,
+				0.25589,
+				0.43646,
+				0.82293,
+				0.25902,
+				0.43357,
+				0.82889,
+				0.26223,
+				0.43064,
+				0.83479,
+				0.26554,
+				0.42767,
+				0.84064,
+				0.26895,
+				0.42467,
+				0.84642,
+				0.27247,
+				0.42163,
+				0.85213,
+				0.27611,
+				0.41857,
+				0.85776,
+				0.27986,
+				0.4155,
+				0.86332,
+				0.28373,
+				0.4124,
+				0.86879,
+				0.28773,
+				0.4093,
+				0.87418,
+				0.29186,
+				0.4062,
+				0.87946,
+				0.29612,
+				0.40312,
+				0.88465,
+				0.30053,
+				0.40005,
+				0.88973,
+				0.30508,
+				0.397,
+				0.8947,
+				0.30977,
+				0.39399,
+				0.89955,
+				0.31462,
+				0.39104,
+				0.90428,
+				0.31961,
+				0.38814,
+				0.90888,
+				0.32476,
+				0.38531,
+				0.91335,
+				0.33005,
+				0.38256,
+				0.91769,
+				0.3355,
+				0.37991,
+				0.92188,
+				0.3411,
+				0.37738,
+				0.92594,
+				0.34684,
+				0.37496,
+				0.92984,
+				0.35273,
+				0.37268,
+				0.93361,
+				0.35876,
+				0.37054,
+				0.93722,
+				0.36493,
+				0.36857,
+				0.94069,
+				0.37122,
+				0.36676,
+				0.94401,
+				0.37764,
+				0.36514,
+				0.94718,
+				0.38418,
+				0.3637,
+				0.95021,
+				0.39082,
+				0.36247,
+				0.9531,
+				0.39756,
+				0.36144,
+				0.95585,
+				0.4044,
+				0.36062,
+				0.95846,
+				0.41132,
+				0.36001,
+				0.96095,
+				0.41832,
+				0.35963,
+				0.96331,
+				0.42539,
+				0.35947,
+				0.96555,
+				0.43252,
+				0.35953,
+				0.96767,
+				0.4397,
+				0.35981,
+				0.96968,
+				0.44694,
+				0.36031,
+				0.97158,
+				0.45421,
+				0.36103,
+				0.97338,
+				0.46152,
+				0.36197,
+				0.97508,
+				0.46886,
+				0.36311,
+				0.97669,
+				0.47623,
+				0.36447,
+				0.97821,
+				0.48361,
+				0.36603,
+				0.97965,
+				0.49101,
+				0.36778,
+				0.981,
+				0.49843,
+				0.36973,
+				0.98228,
+				0.50585,
+				0.37187,
+				0.98348,
+				0.51328,
+				0.3742,
+				0.98462,
+				0.52071,
+				0.3767,
+				0.98569,
+				0.52815,
+				0.37937,
+				0.9867,
+				0.53558,
+				0.38221,
+				0.98765,
+				0.54302,
+				0.38521,
+				0.98853,
+				0.55045,
+				0.38837,
+				0.98936,
+				0.55787,
+				0.39167,
+				0.99014,
+				0.5653,
+				0.39512,
+				0.99087,
+				0.57271,
+				0.39871,
+				0.99156,
+				0.58011,
+				0.40244,
+				0.9922,
+				0.5875,
+				0.4063,
+				0.99278,
+				0.59489,
+				0.41028,
+				0.99333,
+				0.60228,
+				0.41439,
+				0.99383,
+				0.60964,
+				0.41861,
+				0.99431,
+				0.617,
+				0.42295,
+				0.99474,
+				0.62435,
+				0.4274,
+				0.99512,
+				0.6317,
+				0.43195,
+				0.99548,
+				0.63903,
+				0.43661,
+				0.99581,
+				0.64634,
+				0.44136,
+				0.9961,
+				0.65366,
+				0.44621,
+				0.99634,
+				0.66097,
+				0.45116,
+				0.99658,
+				0.66826,
+				0.45619,
+				0.99677,
+				0.67554,
+				0.46131,
+				0.99692,
+				0.68283,
+				0.46653,
+				0.99708,
+				0.69009,
+				0.47181,
+				0.99719,
+				0.69735,
+				0.47718,
+				0.99725,
+				0.70461,
+				0.48263,
+				0.99733,
+				0.71185,
+				0.48815,
+				0.99735,
+				0.71909,
+				0.49376,
+				0.99735,
+				0.72632,
+				0.49943,
+				0.99734,
+				0.73355,
+				0.50517,
+				0.99729,
+				0.74077,
+				0.51098,
+				0.99723,
+				0.74798,
+				0.51686,
+				0.99714,
+				0.75519,
+				0.52281,
+				0.99702,
+				0.7624,
+				0.52882,
+				0.9969,
+				0.76959,
+				0.53489,
+				0.99673,
+				0.7768,
+				0.54104,
+				0.99657,
+				0.78398,
+				0.54723,
+				0.99637,
+				0.79117,
+				0.5535,
+				0.99616,
+				0.79835,
+				0.55982,
+				0.99593,
+				0.80553,
+				0.5662,
+				0.99568,
+				0.81271,
+				0.57265,
+				0.99542,
+				0.81988,
+				0.57914,
+				0.99513,
+				0.82705,
+				0.5857,
+				0.99485,
+				0.83421,
+				0.59231,
+				0.99452,
+				0.84139,
+				0.59898,
+				0.99422,
+				0.84854,
+				0.6057,
+				0.99387,
+				0.85571,
+				0.61248,
+				0.99354,
+				0.86286,
+				0.6193,
+				0.99317,
+				0.87002,
+				0.62619,
+				0.99283,
+				0.87717,
+				0.63311,
+				0.99244,
+				0.88433,
+				0.6401,
+				0.99209,
+				0.89147,
+				0.64712,
+				0.99169,
+				0.89863,
+				0.6542,
+				0.99133,
+				0.90576,
+				0.66131,
+				0.99093,
+				0.91291,
+				0.66848,
+				0.99057,
+				0.92005,
+				0.67567,
+				0.99018,
+				0.9272,
+				0.68293,
+				0.98981,
+				0.93433,
+				0.6902,
+				0.98943,
+				0.94147,
+				0.69752,
+				0.98908,
+				0.9486,
+				0.70486,
+				0.98872,
+				0.95574,
+				0.71224,
+				0.98837,
+				0.96288,
+				0.71965,
+				0.98803,
+				0.97001,
+				0.72708,
+				0.98769,
+				0.97715,
+				0.73454,
+				0.98739,
+				0.98429,
+				0.742,
+				0.98705,
+				0.99144,
+				0.7495
+			]
+		}
+	},
+	"RenderMode1": {
+		"dstBlendAttrib":   1,
+		"srcBlendAttrib":   768,
+		"DepthState":       true,
+		"BlendState":       false,
+		"LightState":       true,
+		"pointSize":        38.644,
+		"pointSizeFactor":  0.0,
+		"clippingDist":     0.01,
+		"alphaKFactor":     1.0,
+		"alphaAttenFactor": 0.0,
+		"alphaSkip":        0.0,
+		"dotsSize":         2,
+		"HermiteVals":      [ 0.7, 0.0, 0.3, 0.0 ],
+		"dotsType":         1,
+		"ColorInt":         1.0,
+		"ColorVel":         0.377,
+		"PalInvert":        true,
+		"PalClamp":         false,
+		"PalOffset":        0.0,
+		"PalRange":         1.0,
+		"PalH":             0.0,
+		"PalS":             0.325,
+		"PalL":             0.53,
+		"lightShinExp":     50.0,
+		"lightDiffInt":     3.0,
+		"lightSpecInt":     1.0,
+		"lightAmbInt":      0.1,
+		"lightStepMin":     0.1,
+		"lightStepMax":     1.1,
+		"lightDir":         [ -20.0, -9.0, 45.0 ],
+		"lightColor":       [ 1.0, 1.0, 1.0 ],
+		"glowOn":           false,
+		"glowSelect":       2,
+		"sigma":            7.0,
+		"sigmaRadX":        2.0,
+		"renderInt":        0.85,
+		"blurInt":          0.26000002,
+		"bilatInt":         0.49,
+		"bilatMix":         0.60400003,
+		"mixTexture":       1.0,
+		"glowThreshold":    0.1,
+		"fxaaOn":           false,
+		"fxaaThreshold":    0.5,
+		"ReductMul":        8.0,
+		"ReductMin":        128.0,
+		"Span":             8.0,
+		"Gamma":            2.3,
+		"Bright":           0.0,
+		"Contrast":         0.01925,
+		"Exposure":         1.2,
+		"ToneMap":          false,
+		"ToneMapVal":       1.0,
+		"ToneMapExp":       1.0,
+		"Palette":          {
+			"Type":    "magma",
+			"Name":    "magma",
+			"rgbData": [
+				0.00146,
+				0.00047,
+				0.01387,
+				0.00226,
+				0.00129,
+				0.01833,
+				0.00328,
+				0.00231,
+				0.02371,
+				0.00451,
+				0.00349,
+				0.02997,
+				0.00595,
+				0.00484,
+				0.03713,
+				0.00759,
+				0.00636,
+				0.04497,
+				0.00943,
+				0.00802,
+				0.05284,
+				0.01146,
+				0.00983,
+				0.06075,
+				0.01371,
+				0.01177,
+				0.06867,
+				0.01616,
+				0.01384,
+				0.0766,
+				0.01881,
+				0.01603,
+				0.08458,
+				0.02169,
+				0.01832,
+				0.09261,
+				0.02479,
+				0.02072,
+				0.10068,
+				0.02812,
+				0.0232,
+				0.10879,
+				0.0317,
+				0.02576,
+				0.11697,
+				0.03552,
+				0.0284,
+				0.12521,
+				0.03961,
+				0.03109,
+				0.13352,
+				0.04383,
+				0.03383,
+				0.14189,
+				0.04806,
+				0.03661,
+				0.15033,
+				0.05232,
+				0.03941,
+				0.15884,
+				0.05661,
+				0.04216,
+				0.16745,
+				0.06095,
+				0.04479,
+				0.17613,
+				0.06533,
+				0.04732,
+				0.18489,
+				0.06976,
+				0.04973,
+				0.19374,
+				0.07426,
+				0.05202,
+				0.20266,
+				0.07881,
+				0.05418,
+				0.21167,
+				0.08345,
+				0.05623,
+				0.22075,
+				0.08816,
+				0.05813,
+				0.22992,
+				0.09295,
+				0.0599,
+				0.23916,
+				0.09783,
+				0.06153,
+				0.24848,
+				0.10282,
+				0.06301,
+				0.25785,
+				0.1079,
+				0.06434,
+				0.26729,
+				0.11309,
+				0.06549,
+				0.27678,
+				0.1184,
+				0.06648,
+				0.28632,
+				0.12383,
+				0.06729,
+				0.29588,
+				0.12938,
+				0.06793,
+				0.30544,
+				0.13505,
+				0.06839,
+				0.315,
+				0.14086,
+				0.06865,
+				0.32454,
+				0.14679,
+				0.06874,
+				0.33401,
+				0.15284,
+				0.06864,
+				0.3434,
+				0.15902,
+				0.06835,
+				0.35269,
+				0.16531,
+				0.06791,
+				0.36182,
+				0.17171,
+				0.0673,
+				0.37077,
+				0.17821,
+				0.06658,
+				0.3795,
+				0.1848,
+				0.06573,
+				0.38797,
+				0.19146,
+				0.06482,
+				0.39615,
+				0.19818,
+				0.06386,
+				0.40401,
+				0.20493,
+				0.06291,
+				0.41151,
+				0.21172,
+				0.06199,
+				0.41865,
+				0.21851,
+				0.06116,
+				0.42539,
+				0.2253,
+				0.06044,
+				0.43174,
+				0.23208,
+				0.05989,
+				0.43769,
+				0.23883,
+				0.05952,
+				0.44326,
+				0.24554,
+				0.05935,
+				0.44844,
+				0.25222,
+				0.05942,
+				0.45325,
+				0.25886,
+				0.05971,
+				0.45771,
+				0.26545,
+				0.06024,
+				0.46184,
+				0.27199,
+				0.06099,
+				0.46566,
+				0.27849,
+				0.06198,
+				0.46919,
+				0.28495,
+				0.06317,
+				0.47245,
+				0.29137,
+				0.06455,
+				0.47546,
+				0.29774,
+				0.06612,
+				0.47824,
+				0.30408,
+				0.06784,
+				0.48081,
+				0.31038,
+				0.0697,
+				0.48319,
+				0.31665,
+				0.07169,
+				0.48538,
+				0.3229,
+				0.07378,
+				0.48741,
+				0.32911,
+				0.07597,
+				0.48929,
+				0.33531,
+				0.07824,
+				0.49102,
+				0.34148,
+				0.08056,
+				0.49263,
+				0.34764,
+				0.08295,
+				0.49412,
+				0.35377,
+				0.08537,
+				0.4955,
+				0.3599,
+				0.08783,
+				0.49678,
+				0.36601,
+				0.09031,
+				0.49796,
+				0.37212,
+				0.09282,
+				0.49905,
+				0.37821,
+				0.09533,
+				0.50007,
+				0.3843,
+				0.09786,
+				0.501,
+				0.39038,
+				0.10038,
+				0.50186,
+				0.39647,
+				0.1029,
+				0.50266,
+				0.40255,
+				0.10542,
+				0.50339,
+				0.40863,
+				0.10793,
+				0.50405,
+				0.41471,
+				0.11043,
+				0.50466,
+				0.42079,
+				0.11292,
+				0.50521,
+				0.42688,
+				0.1154,
+				0.50571,
+				0.43297,
+				0.11785,
+				0.50616,
+				0.43906,
+				0.1203,
+				0.50656,
+				0.44516,
+				0.12272,
+				0.5069,
+				0.45127,
+				0.12513,
+				0.5072,
+				0.45739,
+				0.12752,
+				0.50745,
+				0.46351,
+				0.12989,
+				0.50765,
+				0.46964,
+				0.13225,
+				0.50781,
+				0.47578,
+				0.13458,
+				0.50792,
+				0.48193,
+				0.13689,
+				0.50799,
+				0.48809,
+				0.13919,
+				0.50801,
+				0.49426,
+				0.14146,
+				0.50799,
+				0.50044,
+				0.14372,
+				0.50792,
+				0.50663,
+				0.14596,
+				0.50781,
+				0.51283,
+				0.14818,
+				0.50765,
+				0.51904,
+				0.15038,
+				0.50744,
+				0.52527,
+				0.15257,
+				0.50719,
+				0.53151,
+				0.15474,
+				0.5069,
+				0.53776,
+				0.15689,
+				0.50655,
+				0.54401,
+				0.15903,
+				0.50616,
+				0.55029,
+				0.16116,
+				0.50572,
+				0.55657,
+				0.16327,
+				0.50523,
+				0.56287,
+				0.16537,
+				0.50469,
+				0.56917,
+				0.16745,
+				0.5041,
+				0.57549,
+				0.16953,
+				0.50347,
+				0.58182,
+				0.1716,
+				0.50278,
+				0.58816,
+				0.17365,
+				0.50204,
+				0.59451,
+				0.1757,
+				0.50124,
+				0.60087,
+				0.17774,
+				0.50039,
+				0.60724,
+				0.17978,
+				0.49949,
+				0.61362,
+				0.18181,
+				0.49854,
+				0.62001,
+				0.18384,
+				0.49752,
+				0.6264,
+				0.18587,
+				0.49646,
+				0.6328,
+				0.18789,
+				0.49533,
+				0.63922,
+				0.18992,
+				0.49415,
+				0.64563,
+				0.19195,
+				0.49291,
+				0.65206,
+				0.19399,
+				0.49161,
+				0.65848,
+				0.19603,
+				0.49025,
+				0.66492,
+				0.19807,
+				0.48884,
+				0.67135,
+				0.20013,
+				0.48736,
+				0.67779,
+				0.2022,
+				0.48582,
+				0.68422,
+				0.20429,
+				0.48422,
+				0.69066,
+				0.20638,
+				0.48256,
+				0.6971,
+				0.2085,
+				0.48083,
+				0.70353,
+				0.21064,
+				0.47905,
+				0.70996,
+				0.2128,
+				0.4772,
+				0.71639,
+				0.21498,
+				0.47529,
+				0.72281,
+				0.21719,
+				0.47332,
+				0.72922,
+				0.21944,
+				0.47128,
+				0.73562,
+				0.22171,
+				0.46918,
+				0.742,
+				0.22402,
+				0.46702,
+				0.74838,
+				0.22638,
+				0.46479,
+				0.75474,
+				0.22877,
+				0.46251,
+				0.76108,
+				0.23121,
+				0.46016,
+				0.7674,
+				0.2337,
+				0.45775,
+				0.77369,
+				0.23625,
+				0.45529,
+				0.77997,
+				0.23885,
+				0.45276,
+				0.78621,
+				0.24151,
+				0.45018,
+				0.79243,
+				0.24424,
+				0.44754,
+				0.79861,
+				0.24704,
+				0.44485,
+				0.80475,
+				0.24991,
+				0.4421,
+				0.81085,
+				0.25286,
+				0.43931,
+				0.81691,
+				0.25589,
+				0.43646,
+				0.82293,
+				0.25902,
+				0.43357,
+				0.82889,
+				0.26223,
+				0.43064,
+				0.83479,
+				0.26554,
+				0.42767,
+				0.84064,
+				0.26895,
+				0.42467,
+				0.84642,
+				0.27247,
+				0.42163,
+				0.85213,
+				0.27611,
+				0.41857,
+				0.85776,
+				0.27986,
+				0.4155,
+				0.86332,
+				0.28373,
+				0.4124,
+				0.86879,
+				0.28773,
+				0.4093,
+				0.87418,
+				0.29186,
+				0.4062,
+				0.87946,
+				0.29612,
+				0.40312,
+				0.88465,
+				0.30053,
+				0.40005,
+				0.88973,
+				0.30508,
+				0.397,
+				0.8947,
+				0.30977,
+				0.39399,
+				0.89955,
+				0.31462,
+				0.39104,
+				0.90428,
+				0.31961,
+				0.38814,
+				0.90888,
+				0.32476,
+				0.38531,
+				0.91335,
+				0.33005,
+				0.38256,
+				0.91769,
+				0.3355,
+				0.37991,
+				0.92188,
+				0.3411,
+				0.37738,
+				0.92594,
+				0.34684,
+				0.37496,
+				0.92984,
+				0.35273,
+				0.37268,
+				0.93361,
+				0.35876,
+				0.37054,
+				0.93722,
+				0.36493,
+				0.36857,
+				0.94069,
+				0.37122,
+				0.36676,
+				0.94401,
+				0.37764,
+				0.36514,
+				0.94718,
+				0.38418,
+				0.3637,
+				0.95021,
+				0.39082,
+				0.36247,
+				0.9531,
+				0.39756,
+				0.36144,
+				0.95585,
+				0.4044,
+				0.36062,
+				0.95846,
+				0.41132,
+				0.36001,
+				0.96095,
+				0.41832,
+				0.35963,
+				0.96331,
+				0.42539,
+				0.35947,
+				0.96555,
+				0.43252,
+				0.35953,
+				0.96767,
+				0.4397,
+				0.35981,
+				0.96968,
+				0.44694,
+				0.36031,
+				0.97158,
+				0.45421,
+				0.36103,
+				0.97338,
+				0.46152,
+				0.36197,
+				0.97508,
+				0.46886,
+				0.36311,
+				0.97669,
+				0.47623,
+				0.36447,
+				0.97821,
+				0.48361,
+				0.36603,
+				0.97965,
+				0.49101,
+				0.36778,
+				0.981,
+				0.49843,
+				0.36973,
+				0.98228,
+				0.50585,
+				0.37187,
+				0.98348,
+				0.51328,
+				0.3742,
+				0.98462,
+				0.52071,
+				0.3767,
+				0.98569,
+				0.52815,
+				0.37937,
+				0.9867,
+				0.53558,
+				0.38221,
+				0.98765,
+				0.54302,
+				0.38521,
+				0.98853,
+				0.55045,
+				0.38837,
+				0.98936,
+				0.55787,
+				0.39167,
+				0.99014,
+				0.5653,
+				0.39512,
+				0.99087,
+				0.57271,
+				0.39871,
+				0.99156,
+				0.58011,
+				0.40244,
+				0.9922,
+				0.5875,
+				0.4063,
+				0.99278,
+				0.59489,
+				0.41028,
+				0.99333,
+				0.60228,
+				0.41439,
+				0.99383,
+				0.60964,
+				0.41861,
+				0.99431,
+				0.617,
+				0.42295,
+				0.99474,
+				0.62435,
+				0.4274,
+				0.99512,
+				0.6317,
+				0.43195,
+				0.99548,
+				0.63903,
+				0.43661,
+				0.99581,
+				0.64634,
+				0.44136,
+				0.9961,
+				0.65366,
+				0.44621,
+				0.99634,
+				0.66097,
+				0.45116,
+				0.99658,
+				0.66826,
+				0.45619,
+				0.99677,
+				0.67554,
+				0.46131,
+				0.99692,
+				0.68283,
+				0.46653,
+				0.99708,
+				0.69009,
+				0.47181,
+				0.99719,
+				0.69735,
+				0.47718,
+				0.99725,
+				0.70461,
+				0.48263,
+				0.99733,
+				0.71185,
+				0.48815,
+				0.99735,
+				0.71909,
+				0.49376,
+				0.99735,
+				0.72632,
+				0.49943,
+				0.99734,
+				0.73355,
+				0.50517,
+				0.99729,
+				0.74077,
+				0.51098,
+				0.99723,
+				0.74798,
+				0.51686,
+				0.99714,
+				0.75519,
+				0.52281,
+				0.99702,
+				0.7624,
+				0.52882,
+				0.9969,
+				0.76959,
+				0.53489,
+				0.99673,
+				0.7768,
+				0.54104,
+				0.99657,
+				0.78398,
+				0.54723,
+				0.99637,
+				0.79117,
+				0.5535,
+				0.99616,
+				0.79835,
+				0.55982,
+				0.99593,
+				0.80553,
+				0.5662,
+				0.99568,
+				0.81271,
+				0.57265,
+				0.99542,
+				0.81988,
+				0.57914,
+				0.99513,
+				0.82705,
+				0.5857,
+				0.99485,
+				0.83421,
+				0.59231,
+				0.99452,
+				0.84139,
+				0.59898,
+				0.99422,
+				0.84854,
+				0.6057,
+				0.99387,
+				0.85571,
+				0.61248,
+				0.99354,
+				0.86286,
+				0.6193,
+				0.99317,
+				0.87002,
+				0.62619,
+				0.99283,
+				0.87717,
+				0.63311,
+				0.99244,
+				0.88433,
+				0.6401,
+				0.99209,
+				0.89147,
+				0.64712,
+				0.99169,
+				0.89863,
+				0.6542,
+				0.99133,
+				0.90576,
+				0.66131,
+				0.99093,
+				0.91291,
+				0.66848,
+				0.99057,
+				0.92005,
+				0.67567,
+				0.99018,
+				0.9272,
+				0.68293,
+				0.98981,
+				0.93433,
+				0.6902,
+				0.98943,
+				0.94147,
+				0.69752,
+				0.98908,
+				0.9486,
+				0.70486,
+				0.98872,
+				0.95574,
+				0.71224,
+				0.98837,
+				0.96288,
+				0.71965,
+				0.98803,
+				0.97001,
+				0.72708,
+				0.98769,
+				0.97715,
+				0.73454,
+				0.98739,
+				0.98429,
+				0.742,
+				0.98705,
+				0.99144,
+				0.7495
+			]
+		}
+	}
+}
+{
 	"Attractor":   {
 		"Name":     "MagneticRight",
 		"nMagnets": 8,
