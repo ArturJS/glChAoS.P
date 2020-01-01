@@ -31,6 +31,8 @@ And copy the ErrorLogBox content, also adding:
 
 If no error appear in ErrorLog-box, but nothing appear on the screen, before to contact me, try:
 
+- On mobile devices watch if "lowResources" check is active (mobiles needs it): it is an auto-detect flag, but could fail.
+
 - Close other tabs and/or other browser instances and reload page with the browser "reload button", or (better, on PC) try a "hard reload" using a Ctrl-F5
 
 - Hit ESC key (PC) or double-tap on free canvas border (mobile devices) to hide GUI: if attractor was generated behind a GUI window, it get just a bit time before it appear (it's a SlowMotion feature and Attractor settings are not still complete)
